@@ -75,18 +75,24 @@ async def forward_message_task(client, message, destination_channel, semaphore, 
     media_path = None
     async with semaphore:
         try:
-            # 【新功能】关键词过滤
-            if blacklist and message.text:
-                message_text_lower = message.text.lower() # 转换为小写以便不区分大小写匹配
-                if any(keyword in message_text_lower for keyword in blacklist):
-                    print(f"🤫 消息 ID {message.id} 包含关键词，已跳过。")
-                    return None # 直接返回，不进行后续操作
+            # 【修复关键点】统一获取消息文本（正文或标题/描述）
+            full_text = (message.text or message.caption or "").lower()
 
+            # 关键词过滤逻辑现在作用于 full_text
+            if blacklist and full_text:
+                if any(keyword in full_text for keyword in blacklist):
+                    print(f"🤫 消息 ID {message.id} 包含关键词，已跳过。")
+                    return None  # 发现关键词，直接返回
+
+            # 确保消息有内容（文本或媒体）才继续
             if not message.text and not message.media: return None
+
             print(f"➡️ 正在转发来自频道 {message.chat_id} 的消息 ID: {message.id}")
             if message.media:
                 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
                 media_path = await message.download_media(file=DOWNLOADS_DIR)
+
+            # 注意：转发时依然使用 message.text，因为 Telethon 会自动处理标题
             await client.send_message(destination_channel, message.text, file=media_path)
             print(f"✅ 已成功转发消息 ID {message.id} 到 {destination_channel}")
             return message.id
@@ -112,7 +118,8 @@ async def forward_messages_from_channel(client, source_channel_id, destination_c
             return
 
         print(f"在频道 {source_channel_id} 中找到 {len(messages_to_forward)} 条新消息，准备转发。")
-        tasks = [forward_message_task(client, msg, destination_channel, semaphore, blacklist) for msg in messages_to_forward]
+        tasks = [forward_message_task(client, msg, destination_channel, semaphore, blacklist) for msg in
+                 messages_to_forward]
         if tasks:
             results = await asyncio.gather(*tasks)
             successful_ids = [r for r in results if r is not None]
