@@ -59,8 +59,10 @@ PASSWORD=your_2fa_password
 # --- 频道配置 ---
 # 源频道：填写您想转发的频道的标识符，多个频道用英文逗号(,)分隔
 # - 公开频道: 直接填写用户名 (例如: durov)
-# - 私密频道: 填写邀请链接中 't.me/' 后面的部分 (例如: +Jc37JCr1diEzNDMx)
-CHANNEL_IDENTIFIERS=+Jc37JCr1diEzNDMx,durov
+# - 私密频道: 填写邀请链接CHANNEL_IDENTIFIERS或频道idCHANNEL_IDS
+#CHANNEL_IDENTIFIERS=+Jxxxxxxxxxxxxxxxxx
+# 公开频道填用户名，私密频道填邀请链接中 't.me/' 后面的部分
+CHANNEL_IDS==12346578
 
 # 目标频道：填写您要将消息转发到的频道的用户名
 DESTINATION_CHANNEL=my_destination_channel_username
