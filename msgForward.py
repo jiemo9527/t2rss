@@ -70,11 +70,18 @@ def save_last_id(channel_id, message_id):
         f.write(str(message_id))
 
 
-async def forward_message_task(client, message, destination_channel, semaphore):
+async def forward_message_task(client, message, destination_channel, semaphore, blacklist):
     """处理单条消息的转发任务"""
     media_path = None
     async with semaphore:
         try:
+            # 【新功能】关键词过滤
+            if blacklist and message.text:
+                message_text_lower = message.text.lower() # 转换为小写以便不区分大小写匹配
+                if any(keyword in message_text_lower for keyword in blacklist):
+                    print(f"🤫 消息 ID {message.id} 包含关键词，已跳过。")
+                    return None # 直接返回，不进行后续操作
+
             if not message.text and not message.media: return None
             print(f"➡️ 正在转发来自频道 {message.chat_id} 的消息 ID: {message.id}")
             if message.media:
@@ -91,23 +98,34 @@ async def forward_message_task(client, message, destination_channel, semaphore):
                 os.remove(media_path)
 
 
-async def forward_messages_from_channel(client, source_channel_id, destination_channel, semaphore):
-    """从单个源频道转发新消息"""
-    last_id = get_last_id(source_channel_id)
-    print(f"正在检查频道 {source_channel_id} 中自消息 ID {last_id + 1} 以来的新消息...")
-    messages_to_forward = [msg async for msg in client.iter_messages(source_channel_id, min_id=last_id, reverse=True)]
-    if not messages_to_forward:
-        print(f"频道 {source_channel_id} 中没有找到新消息。")
-        return
-    print(f"在频道 {source_channel_id} 中找到 {len(messages_to_forward)} 条新消息，准备转发。")
-    tasks = [forward_message_task(client, msg, destination_channel, semaphore) for msg in messages_to_forward]
-    if tasks:
-        results = await asyncio.gather(*tasks)
-        successful_ids = [r for r in results if r is not None]
-        if successful_ids:
-            max_id = max(successful_ids)
-            save_last_id(source_channel_id, max_id)
-            print(f"\n🎉 频道 {source_channel_id} 处理完毕。已保存最新消息 ID：{max_id}")
+async def forward_messages_from_channel(client, source_channel_id, destination_channel, semaphore, blacklist):
+    """从单个源频道转发新消息，并捕获该频道可能发生的错误。"""
+    try:
+        last_id = get_last_id(source_channel_id)
+        print(f"正在检查频道 {source_channel_id} 中自消息 ID {last_id + 1} 以来的新消息...")
+
+        messages_to_forward = [msg async for msg in
+                               client.iter_messages(source_channel_id, min_id=last_id, reverse=True)]
+
+        if not messages_to_forward:
+            print(f"频道 {source_channel_id} 中没有找到新消息。")
+            return
+
+        print(f"在频道 {source_channel_id} 中找到 {len(messages_to_forward)} 条新消息，准备转发。")
+        tasks = [forward_message_task(client, msg, destination_channel, semaphore, blacklist) for msg in messages_to_forward]
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            successful_ids = [r for r in results if r is not None]
+            if successful_ids:
+                max_id = max(successful_ids)
+                save_last_id(source_channel_id, max_id)
+                print(f"\n🎉 频道 {source_channel_id} 处理完毕。已保存最新消息 ID：{max_id}")
+
+    except ValueError as e:
+        print(f"\n❌ 处理频道 {source_channel_id} 时发生错误: {e}")
+        print(f"   这通常意味着您没有加入该频道/群组，或者提供的ID不正确。将跳过此频道。\n")
+    except Exception as e:
+        print(f"\n❌ 处理频道 {source_channel_id} 时发生未知错误: {e}\n")
 
 
 async def main():
@@ -118,7 +136,13 @@ async def main():
     destination_channel = os.environ.get('DESTINATION_CHANNEL')
     identifiers_string = os.environ.get('CHANNEL_IDENTIFIERS')
     ids_string = os.environ.get('CHANNEL_IDS')
+    blacklist_string = os.environ.get('KEYWORD_BLACKLIST')
     source_channel_ids = []
+
+    # --- 准备关键词黑名单 ---
+    blacklist = [k.strip().lower() for k in blacklist_string.split(',') if k.strip()] if blacklist_string else []
+    if blacklist:
+        print(f"已加载关键词黑名单: {blacklist}")
 
     # --- 检查关键配置是否存在 ---
     if not all([api_id, api_hash, destination_channel]):
@@ -129,11 +153,14 @@ async def main():
     async with TelegramClient(SESSION_NAME, api_id, api_hash) as client:
         print("已通过会话文件成功登录。")
 
+        print("正在预热会话缓存，请稍候...")
+        await client.get_dialogs()
+        print("缓存预热完毕。")
+
         # --- 优先使用 CHANNEL_IDS ---
         if ids_string:
             print("检测到 CHANNEL_IDS 配置，将直接使用提供的ID。")
             try:
-                # 将逗号分隔的字符串转换为整数列表
                 source_channel_ids = [int(id_str.strip()) for id_str in ids_string.split(',') if id_str.strip()]
                 if not source_channel_ids:
                     print("错误：CHANNEL_IDS 已提供，但内容为空或格式不正确。")
@@ -164,7 +191,7 @@ async def main():
 
         semaphore = asyncio.Semaphore(4)
         forwarding_tasks = [
-            forward_messages_from_channel(client, channel_id, destination_channel, semaphore)
+            forward_messages_from_channel(client, channel_id, destination_channel, semaphore, blacklist)
             for channel_id in source_channel_ids
         ]
         await asyncio.gather(*forwarding_tasks)
