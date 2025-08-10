@@ -15,7 +15,8 @@ Telegram 多频道消息转发机器人
 -.  结构清晰: 自动管理缓存文件，保持项目根目录整洁。
 
 📂 项目结构
-/Telegram-Forwarder
+
+```
 ├── .env                  <-- 您的所有配置和机密信息
 ├── msgForward.py         <-- 主程序执行脚本
 ├── requirements.txt      <-- 项目依赖库
@@ -25,31 +26,28 @@ Telegram 多频道消息转发机器人
     ├── last_ids/         <-- 存放每个频道的转发记录
     │   └── ...
     └── session_name.session  <-- (首次运行后在根目录生成)
+```
+
+
 
 🚀 安装与设置
 请按照以下步骤来设置和运行此项目。
 
 1. 克隆仓库
-git clone https://github.com/your-username/Telegram-Forwarder.git
-cd Telegram-Forwarder
+git clone https://github.com/jiemo9527/t2rss.git
+
 
 2. 安装依赖
-项目依赖 telethon 和 python-dotenv。通过 requirements.txt 文件一键安装：
-
-pip install -r requirements.txt
-
-requirements.txt 文件内容:
-
-telethon
-python-dotenv
-
+项目依赖 telethon 和 python-dotenv。
+```
+pip install telethon
+pip install python-dotenv
+```
 3. 创建并配置 .env 文件
 这是最关键的一步。在项目根目录创建一个名为 .env 的文件，然后将以下模板内容复制进去，并修改为您自己的信息。
 
 # .env 文件模板
-
-# --- 身份认证信息 ---
-# 从 my.telegram.org 获取
+```
 API_ID=12345678
 API_HASH=your_api_hash_string
 
@@ -66,20 +64,20 @@ CHANNEL_IDENTIFIERS=+Jc37JCr1diEzNDMx,durov
 
 # 目标频道：填写您要将消息转发到的频道的用户名
 DESTINATION_CHANNEL=my_destination_channel_username
-
+```
 4. 首次运行与登录
 第一次运行脚本时，telethon 需要登录您的Telegram账号来生成一个 .session 会话文件。
 
 在终端中运行主脚本：
 
-python get_session.py
+```python get_session.py```
 
 程序会提示您输入发送到Telegram的验证码。输入后，如果需要，还会要求输入二次验证密码。成功登录后，会在根目录生成 session_name.session 文件，未来的运行将通过此文件自动登录。
 
 🛠️ 使用
 完成设置后，每次需要转发消息时，只需运行主脚本即可：
 
-python msgForward.py
+```python msgForward.py```
 
 脚本会自动完成以下所有工作：
 
