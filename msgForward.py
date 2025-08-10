@@ -1,5 +1,7 @@
 import os
 import asyncio
+import sys
+import time
 from dotenv import load_dotenv
 from telethon.sync import TelegramClient
 
@@ -11,6 +13,7 @@ SESSION_NAME = 'session_name'
 CACHE_DIR = 'cache'
 LAST_ID_DIR = os.path.join(CACHE_DIR, 'last_ids')
 DOWNLOADS_DIR = os.path.join(CACHE_DIR, 'downloads')
+LOCK_FILE = os.path.join(CACHE_DIR, 'forwarder.lock')  # 锁文件路径
 
 
 # =================================================================
@@ -19,11 +22,8 @@ DOWNLOADS_DIR = os.path.join(CACHE_DIR, 'downloads')
 async def get_channel_id_by_identifier(client, identifier):
     """
     （异步）通过标识符（用户名或私密链接ID）获取单个频道的ID。
-    此函数现在会自动将标识符转换为可被 Telethon 识别的格式。
     """
     entity_to_get = identifier
-    # 如果标识符是私密频道的邀请码 (以 '+' 开头),
-    # 将其拼接成一个完整的 URL，Telethon 才能正确解析。
     if identifier.startswith('+'):
         entity_to_get = f"https://t.me/{identifier}"
 
@@ -117,24 +117,46 @@ async def main():
     api_hash = os.environ.get('API_HASH')
     destination_channel = os.environ.get('DESTINATION_CHANNEL')
     identifiers_string = os.environ.get('CHANNEL_IDENTIFIERS')
+    ids_string = os.environ.get('CHANNEL_IDS')
+    source_channel_ids = []
 
     # --- 检查关键配置是否存在 ---
-    if not all([api_id, api_hash, destination_channel, identifiers_string]):
-        print("错误：请确保 .env 文件中已完整配置 API_ID, API_HASH, DESTINATION_CHANNEL, 和 CHANNEL_IDENTIFIERS。")
+    if not all([api_id, api_hash, destination_channel]):
+        print("错误：请确保 .env 文件中已配置 API_ID, API_HASH, 和 DESTINATION_CHANNEL。")
         return
 
-    # 解析逗号分隔的字符串为标识符列表
-    channel_identifiers_to_forward = [identifier.strip() for identifier in identifiers_string.split(',') if
-                                      identifier.strip()]
-
+    # --- 登录客户端 ---
     async with TelegramClient(SESSION_NAME, api_id, api_hash) as client:
         print("已通过会话文件成功登录。")
 
-        # 动态获取源频道ID
-        source_channel_ids = await get_channel_ids_from_identifiers(client, channel_identifiers_to_forward)
+        # --- 优先使用 CHANNEL_IDS ---
+        if ids_string:
+            print("检测到 CHANNEL_IDS 配置，将直接使用提供的ID。")
+            try:
+                # 将逗号分隔的字符串转换为整数列表
+                source_channel_ids = [int(id_str.strip()) for id_str in ids_string.split(',') if id_str.strip()]
+                if not source_channel_ids:
+                    print("错误：CHANNEL_IDS 已提供，但内容为空或格式不正确。")
+                    return
+            except ValueError:
+                print("错误：CHANNEL_IDS 格式不正确。请确保只包含数字和逗号。")
+                return
 
+        # --- 如果 CHANNEL_IDS 为空，则回退到 CHANNEL_IDENTIFIERS ---
+        elif identifiers_string:
+            print("未配置 CHANNEL_IDS，将使用 CHANNEL_IDENTIFIERS 并解析为ID。")
+            channel_identifiers_to_forward = [identifier.strip() for identifier in identifiers_string.split(',') if
+                                              identifier.strip()]
+            source_channel_ids = await get_channel_ids_from_identifiers(client, channel_identifiers_to_forward)
+
+        # --- 如果两者都为空 ---
+        else:
+            print("错误：必须在 .env 文件中配置 CHANNEL_IDS 或 CHANNEL_IDENTIFIERS 其中之一。")
+            return
+
+        # --- 检查是否成功获取到任何ID ---
         if not source_channel_ids:
-            print("未能从 .env 中配置的标识符获取任何有效频道ID，程序退出。")
+            print("未能获取任何有效的源频道ID，程序退出。")
             return
 
         print(f"程序将从以下源频道ID进行转发: {source_channel_ids}")
@@ -147,8 +169,29 @@ async def main():
         ]
         await asyncio.gather(*forwarding_tasks)
 
-    print("\n所有任务已完成。")
+    print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] 所有任务已完成。")
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    # --- 锁文件机制，防止重复运行 ---
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    if os.path.exists(LOCK_FILE):
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 检测到锁文件，另一个实例可能正在运行，本次任务跳过。")
+        sys.exit()
+
+    try:
+        # 创建锁文件
+        with open(LOCK_FILE, 'w') as f:
+            f.write(str(os.getpid()))
+
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 程序开始运行...")
+        # 运行主程序
+        asyncio.run(main())
+
+    except Exception as e:
+        print(f"程序运行时发生未捕获的错误: {e}")
+    finally:
+        # 确保程序退出时总是删除锁文件
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 锁文件已移除。")
