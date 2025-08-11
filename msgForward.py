@@ -61,16 +61,33 @@ def save_last_id(channel_id, message_id):
         f.write(str(message_id))
 
 def load_dedup_cache(file_path):
-    """从文件加载去重缓存"""
+    """从文件加载去重缓存，现在返回一个集合(set)以实现哈希比对。"""
     if not os.path.exists(file_path):
-        return []
+        return set()
+    fingerprints = set()
     with open(file_path, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f.readlines()]
+        for line in f:
+            stripped_line = line.strip()
+            # 解析 {fingerprint} 格式
+            if stripped_line.startswith('{') and stripped_line.endswith('}'):
+                fingerprints.add(stripped_line[1:-1])
+    return fingerprints
 
-def save_dedup_cache(file_path, cache_deque):
-    """将去重缓存写入文件"""
+def save_dedup_cache(file_path, cache_set, max_size):
+    """将去重缓存写入文件，现在接收一个集合(set)并处理新格式。"""
+    # 将集合转换为列表以便进行切片
+    cache_list = list(cache_set)
+    
+    # 通过只保留列表末尾的部分来近似实现“保留最新”
+    if len(cache_list) > max_size:
+        items_to_save = cache_list[-max_size:]
+    else:
+        items_to_save = cache_list
+
     with open(file_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(cache_deque))
+        # 将每个指纹用 {} 包裹后写入文件
+        for fingerprint in items_to_save:
+            f.write(f"{{{fingerprint}}}\n")
 
 
 # =================================================================
@@ -99,11 +116,11 @@ async def forward_message_task(client, message, config):
             # 2. 内容去重
             if dedup_enabled and dedup_char_count > 0 and full_text:
                 fingerprint = full_text[:dedup_char_count]
-                # 【修复关键点】同时检查持久化缓存和本次运行的即时缓存
+                # 现在两个比对都是高效的哈希查找
                 if fingerprint in dedup_cache or fingerprint in processed_in_run:
                     print(f"🤫 消息 ID {message.id} 内容重复，已跳过。")
                     return None
-                # 如果不重复，立刻将指纹加入即时缓存，防止其他并发任务重复处理
+                # 如果不重复，立刻将指纹加入即时缓存
                 processed_in_run.add(fingerprint)
 
 
@@ -118,7 +135,7 @@ async def forward_message_task(client, message, config):
             
             # 成功转发后，更新持久化去重缓存
             if dedup_enabled and dedup_char_count > 0 and full_text:
-                dedup_cache.append(full_text[:dedup_char_count])
+                dedup_cache.add(full_text[:dedup_char_count])
 
             print(f"✅ 已成功转发消息 ID {message.id} 到 {destination_channel}")
             return message.id
@@ -181,11 +198,13 @@ async def main():
 
     # --- 准备内容去重缓存 ---
     if config['dedup_enabled']:
-        initial_cache = load_dedup_cache(DEDUP_CACHE_FILE)
-        config['dedup_cache'] = collections.deque(initial_cache, maxlen=config['dedup_cache_size'])
+        # 现在直接加载为 set
+        config['dedup_cache'] = load_dedup_cache(DEDUP_CACHE_FILE)
         print(f"内容去重功能已开启，缓存 {len(config['dedup_cache'])} 条指纹。")
+    else:
+        config['dedup_cache'] = set()
     
-    # 【修复关键点】初始化本次运行的即时去重集合
+    # 初始化本次运行的即时去重集合
     config['processed_in_run'] = set()
 
 
@@ -234,7 +253,7 @@ async def main():
 
     # --- 保存去重缓存 ---
     if config['dedup_enabled']:
-        save_dedup_cache(DEDUP_CACHE_FILE, config['dedup_cache'])
+        save_dedup_cache(DEDUP_CACHE_FILE, config['dedup_cache'], config['dedup_cache_size'])
         print("内容去重缓存已保存。")
 
     print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] 所有任务已完成。")
