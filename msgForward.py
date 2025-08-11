@@ -15,7 +15,7 @@ CACHE_DIR = 'cache'
 LAST_ID_DIR = os.path.join(CACHE_DIR, 'last_ids')
 DOWNLOADS_DIR = os.path.join(CACHE_DIR, 'downloads')
 LOCK_FILE = os.path.join(CACHE_DIR, 'forwarder.lock')
-DEDUP_CACHE_FILE = os.path.join(CACHE_DIR, 'dedup_cache.txt')  # 内容去重缓存文件
+DEDUP_CACHE_FILE = os.path.join(CACHE_DIR, 'dedup_cache.txt') # 内容去重缓存文件
 
 
 # =================================================================
@@ -35,7 +35,6 @@ async def get_channel_id_by_identifier(client, identifier):
         print(f"❌ 解析标识符 '{identifier}' 时发生错误: {e}")
         return None
 
-
 async def get_channel_ids_from_identifiers(client, identifiers):
     """（异步）接收一个标识符列表，返回所有有效频道的ID列表。"""
     print("\n--- 开始批量获取频道ID ---")
@@ -45,18 +44,14 @@ async def get_channel_ids_from_identifiers(client, identifiers):
     print(f"--- 批量获取完成，成功找到 {len(valid_ids)} 个有效ID ---\n")
     return valid_ids
 
-
 def get_last_id(channel_id):
     """为指定频道获取最后转发的消息ID"""
     file_path = os.path.join(LAST_ID_DIR, f"{channel_id}.txt")
     if os.path.exists(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
-            try:
-                return int(f.read().strip())
-            except (ValueError, IndexError):
-                return 0
+            try: return int(f.read().strip())
+            except (ValueError, IndexError): return 0
     return 0
-
 
 def save_last_id(channel_id, message_id):
     """为指定频道保存最后转发的消息ID"""
@@ -65,14 +60,12 @@ def save_last_id(channel_id, message_id):
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(str(message_id))
 
-
 def load_dedup_cache(file_path):
     """从文件加载去重缓存"""
     if not os.path.exists(file_path):
         return []
     with open(file_path, 'r', encoding='utf-8') as f:
         return [line.strip() for line in f.readlines()]
-
 
 def save_dedup_cache(file_path, cache_deque):
     """将去重缓存写入文件"""
@@ -91,6 +84,7 @@ async def forward_message_task(client, message, config):
     dedup_enabled = config['dedup_enabled']
     dedup_char_count = config['dedup_char_count']
     dedup_cache = config['dedup_cache']
+    processed_in_run = config['processed_in_run'] # 获取即时去重集合
 
     async with config['semaphore']:
         try:
@@ -105,20 +99,24 @@ async def forward_message_task(client, message, config):
             # 2. 内容去重
             if dedup_enabled and dedup_char_count > 0 and full_text:
                 fingerprint = full_text[:dedup_char_count]
-                if fingerprint in dedup_cache:
+                # 【修复关键点】同时检查持久化缓存和本次运行的即时缓存
+                if fingerprint in dedup_cache or fingerprint in processed_in_run:
                     print(f"🤫 消息 ID {message.id} 内容重复，已跳过。")
                     return None
+                # 如果不重复，立刻将指纹加入即时缓存，防止其他并发任务重复处理
+                processed_in_run.add(fingerprint)
+
 
             if not message.text and not message.media: return None
-
+            
             print(f"➡️ 正在转发来自频道 {message.chat_id} 的消息 ID: {message.id}")
             if message.media:
                 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
                 media_path = await message.download_media(file=DOWNLOADS_DIR)
-
+            
             await client.send_message(destination_channel, message.text, file=media_path)
-
-            # 成功转发后，更新去重缓存
+            
+            # 成功转发后，更新持久化去重缓存
             if dedup_enabled and dedup_char_count > 0 and full_text:
                 dedup_cache.append(full_text[:dedup_char_count])
 
@@ -138,8 +136,7 @@ async def forward_messages_from_channel(client, source_channel_id, config):
         last_id = get_last_id(source_channel_id)
         print(f"正在检查频道 {source_channel_id} 中自消息 ID {last_id + 1} 以来的新消息...")
 
-        messages_to_forward = [msg async for msg in
-                               client.iter_messages(source_channel_id, min_id=last_id, reverse=True)]
+        messages_to_forward = [msg async for msg in client.iter_messages(source_channel_id, min_id=last_id, reverse=True)]
 
         if not messages_to_forward:
             print(f"频道 {source_channel_id} 中没有找到新消息。")
@@ -176,10 +173,9 @@ async def main():
         'dedup_char_count': int(os.environ.get('DEDUPLICATION_CHAR_COUNT', 30)),
         'dedup_cache_size': int(os.environ.get('DEDUPLICATION_CACHE_SIZE', 500))
     }
-
+    
     # --- 准备关键词黑名单 ---
-    config['blacklist'] = [k.strip().lower() for k in config['blacklist_string'].split(',') if k.strip()] if config[
-        'blacklist_string'] else []
+    config['blacklist'] = [k.strip().lower() for k in config['blacklist_string'].split(',') if k.strip()] if config['blacklist_string'] else []
     if config['blacklist']:
         print(f"已加载关键词黑名单: {config['blacklist']}")
 
@@ -188,10 +184,10 @@ async def main():
         initial_cache = load_dedup_cache(DEDUP_CACHE_FILE)
         config['dedup_cache'] = collections.deque(initial_cache, maxlen=config['dedup_cache_size'])
         print(f"内容去重功能已开启，缓存 {len(config['dedup_cache'])} 条指纹。")
-    else:
-        # 【修复关键点】即使去重功能被禁用，也初始化一个空的缓存。
-        # 这可以防止在 forward_message_task 函数中因 'dedup_cache' 键不存在而引发 KeyError。
-        config['dedup_cache'] = collections.deque()
+    
+    # 【修复关键点】初始化本次运行的即时去重集合
+    config['processed_in_run'] = set()
+
 
     # --- 检查关键配置是否存在 ---
     if not all([config['api_id'], config['api_hash'], config['destination_channel']]):
@@ -210,8 +206,7 @@ async def main():
         if config['ids_string']:
             print("检测到 CHANNEL_IDS 配置，将直接使用提供的ID。")
             try:
-                source_channel_ids = [int(id_str.strip()) for id_str in config['ids_string'].split(',') if
-                                      id_str.strip()]
+                source_channel_ids = [int(id_str.strip()) for id_str in config['ids_string'].split(',') if id_str.strip()]
             except ValueError:
                 print("错误：CHANNEL_IDS 格式不正确。")
                 return
@@ -226,10 +221,10 @@ async def main():
         if not source_channel_ids:
             print("未能获取任何有效的源频道ID，程序退出。")
             return
-
+        
         print(f"程序将从以下源频道ID进行转发: {source_channel_ids}")
         print(f"目标频道: {config['destination_channel']}")
-
+        
         config['semaphore'] = asyncio.Semaphore(4)
         forwarding_tasks = [
             forward_messages_from_channel(client, channel_id, config)
@@ -250,11 +245,11 @@ if __name__ == '__main__':
     if os.path.exists(LOCK_FILE):
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 检测到锁文件，另一个实例可能正在运行，本次任务跳过。")
         sys.exit()
-
+    
     try:
         with open(LOCK_FILE, 'w') as f:
             f.write(str(os.getpid()))
-
+        
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 程序开始运行...")
         asyncio.run(main())
 
