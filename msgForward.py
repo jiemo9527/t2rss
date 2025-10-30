@@ -6,7 +6,8 @@ import re
 import collections
 from dotenv import load_dotenv
 from telethon.sync import TelegramClient
-from telethon.tl.types import MessageService
+# --- 已修正：导入正确的类名 ---
+from telethon.tl.types import MessageService, MessageEntityMentionName
 
 # 从 .env 文件加载环境变量
 load_dotenv()
@@ -78,24 +79,37 @@ def extract_quark_link(text):
 # =================================================================
 #  核心转发与清理功能函数
 # =================================================================
-async def forward_message_task(client, message, destination_channel, blacklist):
-    """处理单条消息的转发任务（只包含关键词过滤和实际发送）。"""
+async def forward_message_task(client, message, destination_channel, blacklist, user_blacklist):
+    """处理单条消息的转发任务（包含关键词和用户ID过滤）。"""
     media_path = None
     try:
-        # [最终修复] 直接判断消息类型，如果是服务消息则直接返回
         if isinstance(message, MessageService):
             print(f"🤫 消息 ID {message.id} 是服务消息，已跳过。")
             return None
 
-        full_text = (message.text or message.caption or "").lower()
+        # [修复] 使用 getattr 安全地获取文本和标题
+        message_text = getattr(message, 'text', None)
+        message_caption = getattr(message, 'caption', None)
+        full_text = (message_text or message_caption or "").lower()
 
-        # 关键词过滤
+        # 1. 关键词过滤
         if blacklist and full_text:
             if any(keyword in full_text for keyword in blacklist):
                 print(f"🤫 消息 ID {message.id} (关键词过滤)，已跳过。")
                 return None
 
-        # 确保有内容可转发
+        # --- 2. 新增：用户ID黑名单过滤 ---
+        # .entities 会自动返回 message.entities (文本) 或 message.caption_entities (媒体标题)
+        if user_blacklist and message.entities:
+            for entity in message.entities:
+                if isinstance(entity, MessageEntityMentionName):
+
+                    if entity.user_id in user_blacklist:
+                        print(f"🤫 消息 ID {message.id} (用户ID {entity.user_id} 在黑名单中)，已跳过。")
+                        return None
+        # --- 过滤结束 ---
+
+        # 确保有内容可转发 (使用原始的 text 和 media 判断)
         if not message.text and not message.media: return None
 
         print(f"➡️ 正在转发来自频道 {message.chat_id} 的消息 ID: {message.id}")
@@ -103,6 +117,7 @@ async def forward_message_task(client, message, destination_channel, blacklist):
             os.makedirs(DOWNLOADS_DIR, exist_ok=True)
             media_path = await message.download_media(file=DOWNLOADS_DIR)
 
+        # 发送时，依然使用原始的 message.text，因为它包含了媒体的标题
         await client.send_message(destination_channel, message.text, file=media_path)
 
         print(f"✅ 已成功转发消息 ID {message.id} 到 {destination_channel}")
@@ -129,11 +144,11 @@ async def cleanup_and_get_historical_links(client, config):
         link_groups = collections.defaultdict(list)
 
         async for message in client.iter_messages(destination_channel, limit=limit):
-            # [最终修复] 直接判断消息类型，如果是服务消息则跳过
             if isinstance(message, MessageService):
                 continue
 
-            message_text = message.text or message.caption
+            # [修复] 使用 getattr 安全地获取文本和标题
+            message_text = getattr(message, 'text', None) or getattr(message, 'caption', None)
             if not message_text:
                 continue
 
@@ -142,7 +157,6 @@ async def cleanup_and_get_historical_links(client, config):
                 link_groups[link].append(message)
                 link_groups[link].sort(key=lambda m: m.id, reverse=True)
 
-        # ... 后续代码与之前相同，无需修改 ...
         ids_to_delete = []
         final_links = set()
         for link, messages in link_groups.items():
@@ -179,14 +193,30 @@ async def main():
         'identifiers_string': os.environ.get('CHANNEL_IDENTIFIERS'),
         'ids_string': os.environ.get('CHANNEL_IDS'),
         'blacklist_string': os.environ.get('KEYWORD_BLACKLIST'),
+        # --- 新增：读取用户ID黑名单 ---
+        'user_blacklist_string': os.environ.get('USER_ID_BLACKLIST'),
         'dedup_enabled': os.environ.get('DEDUPLICATION_ENABLED', 'false').lower() == 'true',
         'dedup_cache_size': int(os.environ.get('DEDUPLICATION_CACHE_SIZE', 200))
     }
-    # ... (此部分代码无需修改) ...
+
+    # 加载关键词黑名单
     config['blacklist'] = [k.strip().lower() for k in config['blacklist_string'].split(',') if k.strip()] if config[
         'blacklist_string'] else []
     if config['blacklist']:
         print(f"已加载关键词黑名单: {config['blacklist']}")
+
+    # --- 新增：加载用户ID黑名单 ---
+    config['user_blacklist'] = set()
+    if config['user_blacklist_string']:
+        try:
+            # 将ID转换为整数并存入 set
+            config['user_blacklist'] = {int(uid.strip()) for uid in config['user_blacklist_string'].split(',') if
+                                        uid.strip()}
+            print(f"已加载用户ID黑名单: {config['user_blacklist']}")
+        except ValueError:
+            print("警告：USER_ID_BLACKLIST 格式不正确，应为逗号分隔的数字ID。")
+    # --- 加载结束 ---
+
     if not all([config['api_id'], config['api_hash'], config['destination_channel']]):
         print("错误：请确保 .env 文件中已配置 API_ID, API_HASH, 和 DESTINATION_CHANNEL。")
         return
@@ -196,7 +226,6 @@ async def main():
 
         historical_links = await cleanup_and_get_historical_links(client, config)
 
-        # ... (获取频道ID部分代码无需修改) ...
         source_channel_ids = []
         if config['ids_string']:
             try:
@@ -239,11 +268,11 @@ async def main():
             link_map = {}
             messages_without_link_stage1 = []
             for msg in all_new_messages:
-                # [最终修复] 直接判断消息类型
                 if isinstance(msg, MessageService):
                     continue
 
-                message_text = msg.text or msg.caption
+                # [修复] 使用 getattr 安全地获取文本和标题
+                message_text = getattr(msg, 'text', None) or getattr(msg, 'caption', None)
                 if not message_text:
                     messages_without_link_stage1.append(msg)
                     continue
@@ -262,11 +291,11 @@ async def main():
             print(f"  - 阶段二：与目标频道历史链接比对...")
             messages_after_stage2 = []
             for msg in messages_after_stage1:
-                # [最终修复] 再次判断消息类型
                 if isinstance(msg, MessageService):
                     continue
 
-                message_text = msg.text or msg.caption
+                # [修复] 使用 getattr 安全地获取文本和标题
+                message_text = getattr(msg, 'text', None) or getattr(msg, 'caption', None)
                 if not message_text:
                     messages_after_stage2.append(msg)
                     continue
@@ -282,7 +311,14 @@ async def main():
 
         print(f"过滤完成，最终有 {len(final_messages)} 条消息准备转发。")
         for message in final_messages:
-            await forward_message_task(client, message, config['destination_channel'], config['blacklist'])
+            # --- 修改：在调用时传入 user_blacklist ---
+            await forward_message_task(
+                client,
+                message,
+                config['destination_channel'],
+                config['blacklist'],
+                config['user_blacklist']  # <-- 传入 User ID 黑名单
+            )
 
         if latest_ids_map:
             print("\n--- 更新所有频道的 last_id ---")

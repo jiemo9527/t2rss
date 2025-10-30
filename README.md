@@ -80,7 +80,10 @@ CHANNEL_IDS==12346578
 DESTINATION_CHANNEL=my_destination_channel_username
 # --- 关键词过滤配置 ---
 # 如果消息包含以下任一关键词，将被忽略。多个关键词用英文逗号(,)分隔
-KEYWORD_BLACKLIST=#短剧,#综艺,#真人秀,黑马程序员,综艺,短剧,epub,#带货
+KEYWORD_BLACKLIST=黑马程序员,epub,#带货,#电子书,尚硅谷,去头去尾,C4D,#PanWEB,#游戏,#有声书,#baidu
+# --- 新增：投稿人黑名单=UserID
+USER_ID_BLACKLIST=7234567890
+
 
 # --- 内容去重配置 ---
 # 是否开启内容去重功能 (true/false)
