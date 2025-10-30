@@ -35,7 +35,6 @@ Telegram 多频道消息转发机器人
     ├── downloads/        <-- 临时存放下载的媒体文件
     ├── last_ids/         <-- 存放每个频道的转发记录
     │   └── ...
-    ├── dedup_cache.txt   <-- (开启去重后生成) 内容指纹缓存
     └── forwarder.lock    <-- (程序运行时生成) 防重复运行锁
 └── session_name.session  <-- (首次运行后在根目录生成)
 ```
@@ -88,8 +87,8 @@ USER_ID_BLACKLIST=7234567890
 # --- 内容去重配置 ---
 # 是否开启内容去重功能 (true/false)
 DEDUPLICATION_ENABLED=true
-# 用于生成内容指纹的字符数 (如果消息开头N个字符相同则视为重复)
-DEDUPLICATION_CHAR_COUNT=30
+# (此项已弃用，但保留以兼容旧版)
+# DEDUPLICATION_CHAR_COUNT=52
 # 保留多少条最近消息的指纹用于比对
 DEDUPLICATION_CACHE_SIZE=500
 
