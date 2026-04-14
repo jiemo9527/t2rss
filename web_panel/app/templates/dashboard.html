@@ -95,6 +95,16 @@
     var refreshBtn = document.getElementById("log-refresh-btn");
     var clearBtn = document.getElementById("log-clear-btn");
     var lastContent = "";
+    var redirectedToLogin = false;
+
+    function redirectToLogin() {
+        if (redirectedToLogin) {
+            return;
+        }
+        redirectedToLogin = true;
+        var nextPath = encodeURIComponent(window.location.pathname || "/");
+        window.location.href = "/login?next=" + nextPath;
+    }
 
     function applyContent(content) {
         if (content === lastContent) {
@@ -115,6 +125,12 @@
                 cache: "no-store",
                 credentials: "same-origin"
             });
+
+            if (response.status === 401) {
+                status.textContent = "登录状态已失效，正在跳转登录页...";
+                redirectToLogin();
+                return;
+            }
 
             if (!response.ok) {
                 status.textContent = "日志拉取失败（HTTP " + response.status + "）";
@@ -140,6 +156,12 @@
                 cache: "no-store",
                 credentials: "same-origin"
             });
+
+            if (response.status === 401) {
+                status.textContent = "登录状态已失效，正在跳转登录页...";
+                redirectToLogin();
+                return;
+            }
 
             if (!response.ok) {
                 status.textContent = "日志清空失败（HTTP " + response.status + "）";

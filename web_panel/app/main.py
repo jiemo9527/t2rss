@@ -18,7 +18,7 @@ from .checkpoint_store import ChannelCheckpointStore
 from .config_store import ConfigStore, parse_channel_sources, parse_csv, parse_int_csv
 from .forwarder_service import ForwarderRunner, resolve_identifiers_preview
 from .history_store import RunHistoryStore
-from .logging_utils import create_logger
+from .logging_utils import create_logger, rebind_logger_file_handler
 from .time_utils import now_shanghai_iso, timestamp_to_shanghai_iso
 
 
@@ -1009,6 +1009,8 @@ async def restore_backup(request: Request, backup_name: str):
     try:
         rollback_backup = backup_manager.create_backup_with_prefix("pre_restore_auto")
         result = backup_manager.restore_from_backup(backup_file)
+        rebind_count = rebind_logger_file_handler(logger, config_store.log_file)
+        logger.info("日志文件句柄已重绑，已替换 file handler: %s", rebind_count)
         logger.warning("♻️ 已从备份恢复数据: %s", backup_file.name)
         return redirect_with_message(
             "/plan-backup",
@@ -1046,6 +1048,8 @@ async def restore_backup_upload(request: Request, file: UploadFile = File(...)):
     try:
         rollback_backup = backup_manager.create_backup_with_prefix("pre_restore_auto")
         result = backup_manager.restore_from_backup(upload_backup)
+        rebind_count = rebind_logger_file_handler(logger, config_store.log_file)
+        logger.info("日志文件句柄已重绑，已替换 file handler: %s", rebind_count)
         logger.warning("♻️ 已从上传备份恢复数据: %s", upload_backup.name)
         return redirect_with_message(
             "/plan-backup",
