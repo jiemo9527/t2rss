@@ -67,6 +67,29 @@ docker compose up -d --build
 
 打开：`http://localhost:8080`
 
+## Docker Hub 镜像启动（免本地构建）
+
+镜像地址：
+
+- `wanxve0000/t2rss-web-panel:latest`
+- `wanxve0000/t2rss-web-panel:20260414`
+
+```bash
+docker pull wanxve0000/t2rss-web-panel:latest
+mkdir -p ./data
+docker run -d --name t2rss-web-panel \
+  --restart unless-stopped \
+  -p 8080:8000 \
+  -v $(pwd)/data:/app/data \
+  wanxve0000/t2rss-web-panel:latest
+```
+
+也可将 `docker-compose.yml` 的 `build: .` 改为：
+
+```yaml
+image: wanxve0000/t2rss-web-panel:latest
+```
+
 ## 首次使用流程
 
 1. 打开 **初始化接入** 页面，填写管理员与 Telegram 接入参数。

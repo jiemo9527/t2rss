@@ -16,6 +16,8 @@ git checkout cli
 
 ## 2. 启动服务
 
+### 方式 A：本地构建（仓库源码）
+
 在仓库根目录执行：
 
 ```bash
@@ -29,6 +31,37 @@ docker compose up -d --build
 
 ```bash
 curl http://127.0.0.1:8080/health
+```
+
+### 方式 B：Docker Hub 镜像（推荐快速部署）
+
+当前公开镜像：
+
+- `wanxve0000/t2rss-web-panel:latest`
+- `wanxve0000/t2rss-web-panel:20260414`
+
+```bash
+docker pull wanxve0000/t2rss-web-panel:latest
+mkdir -p /opt/t2rss-web-panel/data
+docker run -d --name t2rss-web-panel \
+  --restart unless-stopped \
+  -p 8080:8000 \
+  -v /opt/t2rss-web-panel/data:/app/data \
+  wanxve0000/t2rss-web-panel:latest
+```
+
+也可以把 `web_panel/docker-compose.yml` 改成直接用镜像：
+
+```yaml
+services:
+  t2rss-web:
+    image: wanxve0000/t2rss-web-panel:latest
+    container_name: t2rss-web-panel
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./data:/app/data
 ```
 
 ## 3. 首次登录
