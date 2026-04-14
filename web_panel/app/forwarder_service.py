@@ -30,10 +30,22 @@ QUARK_TRIGGER_LINK_PAREN_PATTERN = re.compile(
 QUARK_TRIGGER_LINK_INLINE_PATTERN = re.compile(
     rf"{re.escape(BOT_TRIGGER_PHRASE)}\s*(?P<url>(?:https?://t\.me/\S+|tg://resolve\S+))"
 )
+TME_JUMP_LINK_PATTERN = re.compile(r"(?:https?://t\.me/\S+|tg://resolve\S+)")
 
 
 def _has_quark_trigger_phrase(text: Optional[str]) -> bool:
     return BOT_TRIGGER_PHRASE in str(text or "")
+
+
+def _is_quark_jump_link(url: str) -> bool:
+    lower = str(url or "").lower()
+    if not lower:
+        return False
+    if "quark" in lower:
+        return True
+    if "start=" in lower and "_quark" in lower:
+        return True
+    return False
 
 
 def extract_quark_link(text: Optional[str]) -> Optional[str]:
@@ -193,6 +205,16 @@ def _extract_quark_trigger_bot_links_from_text(text: Optional[str]) -> List[str]
         seen.add(url)
         urls.append(url)
 
+    trigger_index = content.find(BOT_TRIGGER_PHRASE)
+    if trigger_index >= 0:
+        after_text = content[trigger_index + len(BOT_TRIGGER_PHRASE) :]
+        next_match = TME_JUMP_LINK_PATTERN.search(after_text)
+        if next_match:
+            url = _clean_url_token(next_match.group(0))
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+
     return urls
 
 
@@ -212,13 +234,10 @@ def _extract_quark_trigger_bot_links(message) -> List[str]:
         if not isinstance(entity, MessageEntityTextUrl):
             continue
 
-        start = int(getattr(entity, "offset", 0) or 0)
-        length = int(getattr(entity, "length", 0) or 0)
-        entity_text = message_text[start : start + length] if length > 0 else ""
-        if BOT_TRIGGER_PHRASE not in entity_text:
-            continue
-
         entity_url = _clean_url_token(str(getattr(entity, "url", "") or ""))
+        lower_url = entity_url.lower()
+        if "t.me/" not in lower_url and not lower_url.startswith("tg://"):
+            continue
         if not entity_url or entity_url in seen:
             continue
         seen.add(entity_url)
@@ -233,20 +252,27 @@ def _extract_quark_trigger_bot_links(message) -> List[str]:
             if button is None:
                 continue
             button_text = str(getattr(button, "text", "") or "")
-            if BOT_TRIGGER_PHRASE not in button_text:
-                continue
 
             button_url = _clean_url_token(str(getattr(button, "url", "") or ""))
             if not button_url:
                 raw_button = getattr(button, "button", None)
                 button_url = _clean_url_token(str(getattr(raw_button, "url", "") or ""))
 
+            lower_url = button_url.lower()
+            if "t.me/" not in lower_url and not lower_url.startswith("tg://"):
+                continue
+
+            if BOT_TRIGGER_PHRASE not in button_text and not _is_quark_jump_link(button_url):
+                continue
+
             if not button_url or button_url in seen:
                 continue
             seen.add(button_url)
             links.append(button_url)
 
-    return links
+    quark_links = [url for url in links if _is_quark_jump_link(url)]
+    other_links = [url for url in links if not _is_quark_jump_link(url)]
+    return quark_links + other_links
 
 
 def _replace_quark_trigger_segment(text: str, resolved_url: str) -> str:
