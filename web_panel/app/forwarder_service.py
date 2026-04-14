@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 from typing import Any, Dict, List, Optional, Set
 
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageEntityMentionName, MessageEntityTextUrl, MessageService
 
 from .checkpoint_store import ChannelCheckpointStore
@@ -18,6 +19,9 @@ from .time_utils import now_shanghai_iso
 QUARK_LINK_PATTERN = re.compile(r"https://pan\.quark\.cn/s/[a-zA-Z0-9]+")
 URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 BOT_TRIGGER_PHRASE = "点击获取夸克链接"
+SEND_RETRY_MAX_ATTEMPTS = 3
+SEND_RETRY_BASE_DELAY_SECONDS = 2
+SEND_INTERVAL_SECONDS = 3
 
 
 def extract_quark_link(text: Optional[str]) -> Optional[str]:
@@ -229,6 +233,58 @@ async def _resolve_link_via_bot(
     logger.info("消息 %s 触发 Bot 解析，但未获取到有效链接。", message_id)
     return None
 
+
+async def _send_message_with_retry(
+    client: TelegramClient,
+    destination_channel: str,
+    outbound_text: Optional[str],
+    media_path: Optional[str],
+    logger,
+    message_id: Any,
+) -> bool:
+    for attempt in range(1, SEND_RETRY_MAX_ATTEMPTS + 1):
+        try:
+            await client.send_message(destination_channel, outbound_text or None, file=media_path)
+            if attempt > 1:
+                logger.info("消息 %s 重试后发送成功（第 %s 次）。", message_id, attempt)
+            return True
+        except FloodWaitError as exc:
+            wait_seconds = int(getattr(exc, "seconds", 0) or 0)
+            if attempt >= SEND_RETRY_MAX_ATTEMPTS:
+                logger.error(
+                    "消息 %s 发送失败：触发 FloodWait，重试已达上限（%s 次，需等待 %s 秒）。",
+                    message_id,
+                    SEND_RETRY_MAX_ATTEMPTS,
+                    wait_seconds,
+                )
+                return False
+
+            sleep_seconds = max(wait_seconds, SEND_RETRY_BASE_DELAY_SECONDS)
+            logger.warning(
+                "消息 %s 发送触发 FloodWait，将在 %s 秒后进行第 %s 次重试。",
+                message_id,
+                sleep_seconds,
+                attempt + 1,
+            )
+            await asyncio.sleep(sleep_seconds)
+        except Exception as exc:
+            if attempt >= SEND_RETRY_MAX_ATTEMPTS:
+                logger.exception("消息 %s 发送最终失败（已重试 %s 次）: %s", message_id, SEND_RETRY_MAX_ATTEMPTS, exc)
+                return False
+
+            sleep_seconds = min(SEND_RETRY_BASE_DELAY_SECONDS * attempt, 10)
+            logger.warning(
+                "消息 %s 发送失败（第 %s/%s 次）: %s；%s 秒后重试。",
+                message_id,
+                attempt,
+                SEND_RETRY_MAX_ATTEMPTS,
+                exc,
+                sleep_seconds,
+            )
+            await asyncio.sleep(sleep_seconds)
+
+    return False
+
 async def _resolve_identifier(client: TelegramClient, identifier: str, logger) -> Optional[int]:
     entity_to_get = identifier
     if identifier.startswith("+"):
@@ -388,7 +444,17 @@ async def _forward_single_message(
             download_dir.mkdir(parents=True, exist_ok=True)
             media_path = await message.download_media(file=str(download_dir))
 
-        await client.send_message(destination_channel, outbound_text or None, file=media_path)
+        message_id = getattr(message, "id", "unknown")
+        send_ok = await _send_message_with_retry(
+            client=client,
+            destination_channel=destination_channel,
+            outbound_text=outbound_text,
+            media_path=media_path,
+            logger=logger,
+            message_id=message_id,
+        )
+        if not send_ok:
+            return "error"
         return "forwarded"
     except Exception:
         logger.exception("转发消息失败，消息 ID: %s", getattr(message, "id", "unknown"))
@@ -633,6 +699,8 @@ async def run_forwarder_once(
 
             processed_count = 0
             for message in final_messages:
+                source_channel_id = channel_by_message_obj.get(id(message), "unknown")
+                message_id = getattr(message, "id", "unknown")
                 reason = await _forward_single_message(
                     client=client,
                     message=message,
@@ -648,8 +716,8 @@ async def run_forwarder_once(
 
                 if reason == "forwarded":
                     stats["forwarded_total"] += 1
-                    source_channel_id = channel_by_message_obj.get(id(message))
-                    if source_channel_id is not None:
+                    logger.info("✅ 发送成功：源频道 %s，消息 %s", source_channel_id, message_id)
+                    if isinstance(source_channel_id, int):
                         current_forwarded = forwarded_ids_map.get(source_channel_id, 0)
                         if message.id > current_forwarded:
                             forwarded_ids_map[source_channel_id] = message.id
@@ -657,18 +725,31 @@ async def run_forwarder_once(
                     stats["simulated_forwarded_total"] += 1
                 elif reason == "skipped_keyword":
                     stats["skipped_keyword"] += 1
+                    logger.info("⏭️ 跳过（关键词黑名单）：源频道 %s，消息 %s", source_channel_id, message_id)
                 elif reason == "skipped_user_blacklist":
                     stats["skipped_user_blacklist"] += 1
+                    logger.info("⏭️ 跳过（用户黑名单）：源频道 %s，消息 %s", source_channel_id, message_id)
                 elif reason == "skipped_service":
                     stats["skipped_service"] += 1
+                    logger.info("⏭️ 跳过（服务消息）：源频道 %s，消息 %s", source_channel_id, message_id)
                 elif reason == "skipped_no_content":
                     stats["skipped_no_content"] += 1
+                    logger.info("⏭️ 跳过（空内容）：源频道 %s，消息 %s", source_channel_id, message_id)
                 elif reason == "error":
                     stats["error_total"] += 1
+                    logger.error("❌ 发送失败：源频道 %s，消息 %s", source_channel_id, message_id)
 
                 processed_count += 1
                 if processed_count % 500 == 0 or processed_count == len(final_messages):
                     logger.info("⏳ 处理进度：%s/%s", processed_count, len(final_messages))
+
+                if (
+                    not test_mode_enabled
+                    and reason in {"forwarded", "error"}
+                    and processed_count < len(final_messages)
+                ):
+                    logger.info("⏱️ 发送间隔等待 %s 秒，避免风控。", SEND_INTERVAL_SECONDS)
+                    await asyncio.sleep(SEND_INTERVAL_SECONDS)
 
             if test_mode_enabled:
                 stats["checkpoint_updated"] = False
@@ -707,6 +788,17 @@ async def run_forwarder_once(
                     f"错误 {stats['error_total']} 条，"
                     f"耗时 {stats['duration_seconds']} 秒。"
                 )
+            logger.info(
+                "📦 最终统计：待处理=%s，成功发送=%s，失败=%s，"
+                "跳过关键词=%s，跳过用户=%s，跳过服务=%s，跳过空内容=%s。",
+                stats["after_dedup_total"],
+                stats["forwarded_total"],
+                stats["error_total"],
+                stats["skipped_keyword"],
+                stats["skipped_user_blacklist"],
+                stats["skipped_service"],
+                stats["skipped_no_content"],
+            )
             logger.info("✅ 所有任务已完成。")
             return {
                 "status": "success",
