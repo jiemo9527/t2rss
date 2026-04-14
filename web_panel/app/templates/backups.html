@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>系统数据备份</h2>
+    <p>备份会打包 <code>data/</code> 下的持久化数据（不包含备份目录自身）。</p>
+
+    <form method="post" action="/backups/create">
+        <button type="submit">创建备份</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>现有备份文件</h2>
+
+    {% if backups %}
+    <table>
+        <thead>
+        <tr>
+            <th>备份文件名</th>
+            <th>修改时间（上海时间）</th>
+            <th>大小（字节）</th>
+            <th>操作</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for backup in backups %}
+        <tr>
+            <td>{{ backup.name }}</td>
+            <td>{{ backup.modified_at }}</td>
+            <td>{{ backup.size_bytes }}</td>
+            <td>
+                <a class="inline-link" href="/backups/download/{{ backup.name }}">下载</a>
+                <form class="inline-form" method="post" action="/backups/delete/{{ backup.name }}">
+                    <button class="button-danger" type="submit">删除</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>暂无备份文件。</p>
+    {% endif %}
+</section>
+{% endblock %}

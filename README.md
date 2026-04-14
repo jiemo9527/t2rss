@@ -1,132 +1,128 @@
-Telegram 多频道消息转发机器人
+# T2RSS Web Panel 使用指南
 
-✨ 主要功能
+本仓库主分支 (`main`) 现已聚焦 `web_panel`，用于通过网页管理 Telegram 多源转发。
 
+如果你需要旧版命令行脚本（`msgForward.py` / `get_session.py` / `getCIDTEST.py`），请切换到 `cli` 分支：
 
-多源转发: 支持从一个或多个源频道同时抓取消息。
-
-灵活配置: 支持通过频道ID（推荐）或频道标识符（备用）两种方式指定源频道。
-
-类型支持: 完美支持公开频道（通过用户名）和私密频道（通过邀请链接）。
-
-关键词过滤: 可自定义黑名单，自动跳过包含指定关键词的消息。
-
-内容去重: 智能识别并跳过近期已转发过的重复内容，避免信息冗余。
-
-媒体处理: 能够转发文本消息、图片、视频和其他媒体文件。
-
-断点续传: 自动记录每个频道已转发的最后一条消息ID，避免重复转发和消息丢失。
-
-防止重复运行: 内置锁文件机制，确保在任何时候只有一个实例在运行，完美适用于高频率的定时任务。
-
-异步高效: 基于 asyncio 实现异步处理，资源占用少，运行效率高。
-
-结构清晰: 自动管理缓存文件，保持项目根目录整洁。
-
-
-📂 项目结构
-
-```
-├── .env                  <-- 您的所有配置和机密信息
-├── msgForward.py         <-- 主程序执行脚本
-├── requirements.txt      <-- 项目依赖库
-├── .gitignore            <-- (可选) 忽略不必要的文件
-└── cache/                <-- (首次运行后自动生成)
-    ├── downloads/        <-- 临时存放下载的媒体文件
-    ├── last_ids/         <-- 存放每个频道的转发记录
-    │   └── ...
-    └── forwarder.lock    <-- (程序运行时生成) 防重复运行锁
-└── session_name.session  <-- (首次运行后在根目录生成)
+```bash
+git checkout cli
 ```
 
+## 1. 环境要求
 
+- Docker + Docker Compose
+- 可用的 Telegram API 凭据：`API_ID`、`API_HASH`
+- 一个可登录 Telegram 的账号（首次会话创建用）
 
-🚀 安装与设置
-请按照以下步骤来设置和运行此项目。
+## 2. 启动服务
 
-1. 克隆仓库
-git clone https://github.com/jiemo9527/t2rss.git
+在仓库根目录执行：
 
-
-2. 安装依赖
-项目依赖 telethon 和 python-dotenv。
+```bash
+cd web_panel
+docker compose up -d --build
 ```
-pip install telethon
-pip install python-dotenv
+
+默认访问地址：`http://127.0.0.1:8080`
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8080/health
 ```
-3. 创建并配置 .env 文件
-这是最关键的一步。在项目根目录创建一个名为 .env 的文件，然后将以下模板内容复制进去，并修改为您自己的信息。
 
-# .env 文件模板
+## 3. 首次登录
+
+- 首次启动如果未配置管理员密码，系统会自动生成随机初始密码并写入容器日志。
+- 查看日志获取初始密码：
+
+```bash
+docker logs t2rss-web-panel
 ```
-API_ID=12345678
-API_HASH=your_api_hash_string
 
-# 您的Telegram账号信息
-PHONE=+1234567890
-# 如果您开启了二次验证（Two-Factor Authentication），请填写此项，否则留空
-PASSWORD=your_2fa_password
+- 登录后请立刻在 **初始化接入** 页面修改管理员用户名/密码（需校验当前密码）。
 
-# --- 频道配置 ---
-# 源频道：填写您想转发的频道的标识符，多个频道用英文逗号(,)分隔
-# - 公开频道: 直接填写用户名 (例如: durov)
-# - 私密频道: 填写邀请链接CHANNEL_IDENTIFIERS或频道idCHANNEL_IDS
-#CHANNEL_IDENTIFIERS=+Jxxxxxxxxxxxxxxxxx
-# 公开频道填用户名，私密频道填邀请链接中 't.me/' 后面的部分
-CHANNEL_IDS==12346578
+## 4. 首次配置流程（推荐顺序）
 
-# 目标频道：填写您要将消息转发到的频道的用户名
-DESTINATION_CHANNEL=my_destination_channel_username
-# --- 关键词过滤配置 ---
-# 如果消息包含以下任一关键词，将被忽略。多个关键词用英文逗号(,)分隔
-KEYWORD_BLACKLIST=黑马程序员,epub,#带货,#电子书,尚硅谷,去头去尾,C4D,#PanWEB,#游戏,#有声书,#baidu
-# --- 新增：投稿人黑名单=UserID
-USER_ID_BLACKLIST=7234567890
+1. 打开 **初始化接入** 页面，填写 `API_ID` / `API_HASH` / `PHONE` / `PASSWORD`（如有二步验证）。
+2. 在 **会话管理** 上传 `.session` 文件，或在容器内创建会话：
 
+   ```bash
+   docker exec -it t2rss-web-panel python tools/create_session.py
+   ```
 
-# --- 内容去重配置 ---
-# 是否开启内容去重功能 (true/false)
-DEDUPLICATION_ENABLED=true
-# (此项已弃用，但保留以兼容旧版)
-# DEDUPLICATION_CHAR_COUNT=52
-# 保留多少条最近消息的指纹用于比对
-DEDUPLICATION_CACHE_SIZE=500
+   上传任意名称 `.session` 后，系统会统一保存为 `t2rss.session`。
 
+3. 打开 **转发设置** 页面：
+   - 左侧填写来源（`t.me` 邀请链接/用户名）
+   - 点击“解析来源 -> CID”
+   - 在中间表格启用需要的来源并保存
+   - 填写目标频道 `DESTINATION_CHANNEL`
+4. 在页面下方检查断点（`last_id`）并按需创建/修改/删除。
+5. 回到 **仪表盘** 点击“立即执行转发”。
+
+## 5. 核心功能说明
+
+- 多源频道合并抓取 + 时间排序
+- 关键词黑名单过滤
+- 用户 ID 黑名单过滤
+- 夸克链接去重（目标历史预清理 + 本轮去重 + 历史比对）
+- 场景 7 支持：消息含“点击获取夸克链接”时，先跳转 Bot 解析链接，再按最终夸克链接去重并追加到消息末尾后转发
+- 单实例锁（防止并发重入）
+- 断点存储在 SQLite（`channel_last_id`）
+- 测试模式（仅模拟，不真实发送、不更新断点）
+- 自动运行、总超时、强制中止
+- 备份创建/下载/删除/恢复（恢复前自动创建回滚备份）
+
+## 6. 重要数据目录
+
+`web_panel/data/` 下的关键文件：
+
+- `config.env`：面板配置
+- `panel.db`：断点、运行历史、登录防爆破
+- `session/t2rss.session`：Telegram 会话
+- `state/forwarder.lock`：运行锁
+- `state/downloads/`：媒体临时目录
+- `logs/panel.log`：面板日志
+- `backups/*.zip`：备份文件
+
+## 7. 常用运维命令
+
+重建并启动：
+
+```bash
+cd web_panel
+docker compose up -d --build
 ```
-4. 首次运行与登录
-第一次运行脚本时，telethon 需要登录您的Telegram账号来生成一个 .session 会话文件。
 
-在终端中运行主脚本：
+查看服务状态：
 
-```python get_session.py```
+```bash
+cd web_panel
+docker compose ps
+```
 
-程序会提示您输入发送到Telegram的验证码。输入后，如果需要，还会要求输入二次验证密码。成功登录后，会在根目录生成 session_name.session 文件，未来的运行将通过此文件自动登录。
+查看实时日志：
 
-🛠️ 使用
-完成设置后，每次需要转发消息时，只需运行主脚本即可：
+```bash
+docker logs -f t2rss-web-panel
+```
 
-```python msgForward.py```
+停止服务：
 
-脚本会自动完成以下所有工作：
-读取 .env 配置。
+```bash
+cd web_panel
+docker compose down
+```
 
-使用 .session 文件登录。
+## 8. 常见问题
 
-解析源频道（优先使用ID，其次是标识符）。
+- 登录被锁：等待 `PANEL_LOGIN_LOCK_SECONDS` 到期，或在配置中调整锁定策略。
+- 提示会话缺失：重新上传会话或在容器里运行 `tools/create_session.py`。
+- 没有转发：检查来源是否已解析到 CID 且处于启用状态，目标频道是否可访问。
+- 去重看起来不生效：确认 `DEDUPLICATION_ENABLED=true`，并适当增大 `DEDUPLICATION_CACHE_SIZE`。
 
-检查每条新消息是否包含黑名单关键词。
+## 9. 分支说明
 
-检查每条新消息是否与近期内容重复。
-
-将通过所有过滤的新消息转发到目标频道。
-
-更新已转发的消息ID和内容指纹记录。
-
-
-🤖 自动化部署 (定时任务)
-得益于内置的防重复运行机制，您可以放心地设置一个高频率的定时任务来执行此脚本。
-
-
-
-📄 许可证
-该项目采用 MIT License 授权。
+- `main`：Web 管理面板版本（当前主线）
+- `cli`：旧版 CLI 脚本版本

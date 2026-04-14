@@ -1,0 +1,515 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>转发通道流程图配置</h2>
+    <p>流程：来源频道列表 → 解析成 CID → 选择启用来源 → 填写目标频道并保存。</p>
+
+    <form method="post" action="/forward-settings/save">
+        <div class="flow-grid">
+            <div class="flow-step">
+                <h3>① 来源频道列表</h3>
+                <textarea name="sources_input" rows="18" placeholder="每行一个来源，支持 t.me 邀请链接/用户名链接">{{ sources_input }}</textarea>
+                <small class="field-hint">支持混合格式示例：<code>https://t.me/+xxxxx</code>、<code>https://t.me/abc</code>。</small>
+                <div class="flow-step-actions">
+                    <button type="submit" formaction="/forward-settings/resolve">解析来源 -> CID</button>
+                </div>
+            </div>
+
+            <div class="flow-arrow">→</div>
+
+            <div class="flow-step">
+                <h3>② CID 转换结果与来源开关</h3>
+                {% if source_items %}
+                <table id="source-items-table">
+                    <thead>
+                    <tr>
+                        <th>启用</th>
+                        <th>来源频道</th>
+                        <th>CID</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for item in source_items %}
+                    <tr data-source="{{ item.source }}">
+                        <td>
+                            <input
+                                type="checkbox"
+                                name="row_enabled_source"
+                                value="{{ item.source }}"
+                                {% if item.enabled and item.cid %}checked{% endif %}
+                            >
+                        </td>
+                        <td>
+                            {{ item.source }}
+                            <input type="hidden" name="row_source" value="{{ item.source }}">
+                        </td>
+                        <td>
+                            {{ item.cid if item.cid else "-" }}
+                            <input type="hidden" name="row_cid" value="{{ item.cid if item.cid else '' }}">
+                        </td>
+                        <td>
+                            {% if item.cid %}
+                            <span class="status-badge status-ok">解析成功</span>
+                            {% else %}
+                            <span class="status-badge status-fail">{{ item.error or "解析失败" }}</span>
+                            {% endif %}
+                            <input type="hidden" name="row_status" value="{{ item.status }}">
+                            <input type="hidden" name="row_error" value="{{ item.error }}">
+                        </td>
+                        <td>
+                            <button type="button" class="button-danger button-small source-row-remove" data-source="{{ item.source }}">删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p>暂无解析结果，请先在左侧输入来源并点击“解析来源 -> CID”。</p>
+                {% endif %}
+            </div>
+
+            <div class="flow-arrow">→</div>
+
+            <div class="flow-step">
+                <h3>③ 目标频道</h3>
+                <label>
+                    DESTINATION_CHANNEL
+                    <input type="text" name="DESTINATION_CHANNEL" value="{{ config.get('DESTINATION_CHANNEL', '') }}" placeholder="https://t.me/rjuhrouh">
+                    <small class="field-hint">填写最终转发到的目标频道链接或可识别目标实体。</small>
+                </label>
+                <div class="flow-step-actions">
+                    <button type="submit">保存通道配置</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>过滤与去重策略</h3>
+            <div class="form-grid">
+                <div class="field-block">
+                    <span class="field-label">关键词拦截黑名单</span>
+                    <div class="chip-editor" data-name="KEYWORD_BLACKLIST" data-value="{{ config.get('KEYWORD_BLACKLIST', '') }}">
+                        <input type="hidden" name="KEYWORD_BLACKLIST" value="{{ config.get('KEYWORD_BLACKLIST', '') }}">
+                        <div class="chip-box">
+                            <div class="chip-list"></div>
+                            <input type="text" class="chip-input" placeholder="输入后按回车/逗号，可粘贴多项" autocomplete="off">
+                        </div>
+                    </div>
+                    <small class="field-hint">命中关键词即跳过转发，大小写不敏感。</small>
+                </div>
+
+                <div class="field-block">
+                    <span class="field-label">雷锋黑名单</span>
+                    <div class="chip-editor" data-name="USER_ID_BLACKLIST" data-value="{{ config.get('USER_ID_BLACKLIST', '') }}">
+                        <input type="hidden" name="USER_ID_BLACKLIST" value="{{ config.get('USER_ID_BLACKLIST', '') }}">
+                        <div class="chip-box">
+                            <div class="chip-list"></div>
+                            <input type="text" class="chip-input" placeholder="输入后按回车/逗号，可粘贴多项" autocomplete="off">
+                        </div>
+                    </div>
+                    <small class="field-hint">命中黑名单用户 ID 的提及消息将被跳过。</small>
+                </div>
+
+                <label>
+                    DEDUPLICATION_CACHE_SIZE
+                    <input type="number" min="1" name="DEDUPLICATION_CACHE_SIZE" value="{{ config.get('DEDUPLICATION_CACHE_SIZE', '200') }}">
+                    <small class="field-hint">目标频道去重时扫描的历史消息条数。</small>
+                </label>
+
+                <label class="checkbox-row">
+                    <input type="checkbox" name="DEDUPLICATION_ENABLED" {% if config.get('DEDUPLICATION_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                    开启夸克链接去重
+                </label>
+            </div>
+            <div class="form-actions">
+                <button type="submit">保存过滤与通道配置</button>
+            </div>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h2>断点管理（last_id）</h2>
+    <p>旧版 <code>&lt;CID&gt;.txt</code> 已自动迁移到数据库；文件名即 CID，文件内容即 last_id。</p>
+
+    <button type="button" id="toggle-manual-checkpoint" class="button-secondary">手动创建</button>
+
+    <form method="post" action="/forward-settings/checkpoints/upsert" class="form-grid manual-checkpoint-form" id="manual-checkpoint-form">
+        <label>
+            频道 ID
+            <input type="number" name="channel_id" required>
+        </label>
+        <label>
+            last_id
+            <input type="number" min="0" name="last_id" required>
+        </label>
+        <div class="form-actions">
+            <button type="submit">创建或更新断点</button>
+        </div>
+    </form>
+
+    {% if last_ids %}
+    <form method="post" action="/forward-settings/checkpoints/batch-save">
+        <table>
+            <thead>
+            <tr>
+                <th>频道 ID</th>
+                <th>last_id</th>
+                <th>更新时间（上海时间）</th>
+                <th>操作</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in last_ids %}
+            <tr>
+                <td>
+                    {{ item.channel_id }}
+                    <input type="hidden" name="batch_channel_id" value="{{ item.channel_id }}">
+                </td>
+                <td>
+                    <input type="number" min="0" name="batch_last_id" value="{{ item.last_id }}" required style="width: 150px;">
+                </td>
+                <td>{{ item.updated_at }}</td>
+                <td>
+                    <button
+                        type="submit"
+                        class="button-danger button-small"
+                        name="delete_channel_id"
+                        value="{{ item.channel_id }}"
+                        formaction="/forward-settings/checkpoints/delete"
+                        formmethod="post"
+                        formnovalidate
+                        onclick="return confirm('确认删除频道 {{ item.channel_id }} 的断点记录吗？');"
+                    >删除</button>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <div class="form-actions">
+            <button type="submit">保存全部断点</button>
+        </div>
+    </form>
+    {% else %}
+    <p>暂无断点记录。</p>
+    {% endif %}
+</section>
+
+<script>
+(function () {
+    function normalizeTokens(rawText) {
+        return String(rawText || "")
+            .split(/[\n,，]/g)
+            .map(function (item) { return item.trim(); })
+            .filter(function (item) { return item.length > 0; });
+    }
+
+    function uniqueTokens(tokens) {
+        var results = [];
+        var seen = {};
+        tokens.forEach(function (token) {
+            if (seen[token]) {
+                return;
+            }
+            seen[token] = true;
+            results.push(token);
+        });
+        return results;
+    }
+
+    function initChipEditor(editor) {
+        if (editor.getAttribute("data-chip-initialized") === "1") {
+            return;
+        }
+        editor.setAttribute("data-chip-initialized", "1");
+
+        var hidden = editor.querySelector('input[type="hidden"]');
+        var chipList = editor.querySelector(".chip-list");
+        var chipInput = editor.querySelector(".chip-input");
+        var chipBox = editor.querySelector(".chip-box");
+
+        if (!hidden || !chipList || !chipInput || !chipBox) {
+            return;
+        }
+
+        var idSeed = 0;
+        var items = [];
+
+        function nextId() {
+            idSeed += 1;
+            return String(idSeed);
+        }
+
+        function containsText(token) {
+            for (var i = 0; i < items.length; i += 1) {
+                if (items[i].text === token) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function commitInput() {
+            var value = String(chipInput.value || "").trim();
+            if (value) {
+                addFromText(value);
+            }
+            chipInput.value = "";
+        }
+
+        function syncHidden() {
+            hidden.value = items.map(function (item) { return item.text; }).join(",");
+        }
+
+        function render() {
+            chipList.innerHTML = "";
+
+            var fragment = document.createDocumentFragment();
+            items.forEach(function (item) {
+                var chip = document.createElement("span");
+                chip.className = "chip-item";
+                chip.setAttribute("data-chip-id", String(item.id));
+
+                var label = document.createElement("span");
+                label.className = "chip-text";
+                label.textContent = item.text;
+
+                var removeBtn = document.createElement("button");
+                removeBtn.type = "button";
+                removeBtn.className = "chip-remove";
+                removeBtn.textContent = "×";
+                removeBtn.setAttribute("data-remove-id", String(item.id));
+                removeBtn.setAttribute("aria-label", "删除");
+
+                chip.appendChild(label);
+                chip.appendChild(removeBtn);
+                fragment.appendChild(chip);
+            });
+
+            chipList.appendChild(fragment);
+            syncHidden();
+        }
+
+        function removeById(targetId) {
+            if (!targetId) {
+                return;
+            }
+
+            var next = [];
+            for (var i = 0; i < items.length; i += 1) {
+                if (items[i].id !== targetId) {
+                    next.push(items[i]);
+                }
+            }
+            items = next;
+            render();
+        }
+
+        function addFromText(text) {
+            var tokens = normalizeTokens(text);
+            var changed = false;
+
+            tokens.forEach(function (token) {
+                if (!containsText(token)) {
+                    items.push({
+                        id: nextId(),
+                        text: token,
+                    });
+                    changed = true;
+                }
+            });
+
+            if (changed) {
+                render();
+            }
+        }
+
+        function handleRemoveFromEvent(event) {
+            var target = event.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+
+            var removeBtn = null;
+            if (target.classList.contains("chip-remove")) {
+                removeBtn = target;
+            } else {
+                removeBtn = target.closest(".chip-remove");
+            }
+
+            if (!removeBtn) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            removeById(String(removeBtn.getAttribute("data-remove-id") || ""));
+        }
+
+        chipList.addEventListener("pointerdown", handleRemoveFromEvent);
+        chipList.addEventListener("click", handleRemoveFromEvent);
+
+        chipInput.addEventListener("keydown", function (event) {
+            if (event.key === "Enter" || event.key === "," || event.key === "，") {
+                event.preventDefault();
+                commitInput();
+            }
+        });
+
+        chipInput.addEventListener("blur", function () {
+            commitInput();
+        });
+
+        chipInput.addEventListener("paste", function (event) {
+            var clipboardText = "";
+            if (event.clipboardData && event.clipboardData.getData) {
+                clipboardText = event.clipboardData.getData("text");
+            }
+            if (clipboardText) {
+                event.preventDefault();
+                addFromText(clipboardText);
+                chipInput.value = "";
+            }
+        });
+
+        if (chipBox) {
+            chipBox.addEventListener("click", function (event) {
+                var target = event.target;
+                if (!(target instanceof Element)) {
+                    return;
+                }
+
+                if (target === chipInput) {
+                    return;
+                }
+                if (!target.closest(".chip-remove")) {
+                    chipInput.focus();
+                }
+            });
+        }
+
+        uniqueTokens(normalizeTokens(hidden.value)).forEach(function (token) {
+            items.push({
+                id: nextId(),
+                text: token,
+            });
+        });
+
+        render();
+    }
+
+    function normalizeSourceToken(rawValue) {
+        var raw = String(rawValue || "").trim();
+        if (!raw) {
+            return "";
+        }
+
+        var hashIndex = raw.indexOf("#");
+        if (hashIndex >= 0) {
+            raw = raw.slice(0, hashIndex).trim();
+        }
+
+        raw = raw.replace(/^,+|,+$/g, "");
+        raw = raw.replace(/^\[+|\]+$/g, "");
+        raw = raw.replace(/^['\"]+|['\"]+$/g, "");
+        if (raw.charAt(0) === "-") {
+            raw = raw.slice(1).trim();
+        }
+
+        return raw.trim();
+    }
+
+    function parseSourcesInputText(text) {
+        return String(text || "")
+            .replace(/，/g, ",")
+            .replace(/\n/g, ",")
+            .split(",")
+            .map(function (item) {
+                return normalizeSourceToken(item);
+            })
+            .filter(function (item) {
+                return item.length > 0;
+            });
+    }
+
+    function removeSourceFromTextarea(textarea, sourceToRemove) {
+        if (!textarea) {
+            return;
+        }
+
+        var target = normalizeSourceToken(sourceToRemove);
+        if (!target) {
+            return;
+        }
+
+        var tokens = parseSourcesInputText(textarea.value);
+        var seen = {};
+        var next = [];
+
+        tokens.forEach(function (token) {
+            if (token === target) {
+                return;
+            }
+            if (seen[token]) {
+                return;
+            }
+            seen[token] = true;
+            next.push(token);
+        });
+
+        textarea.value = next.join("\n");
+    }
+
+    var editors = document.querySelectorAll(".chip-editor");
+    editors.forEach(function (editor) {
+        initChipEditor(editor);
+    });
+
+    var sourceTable = document.getElementById("source-items-table");
+    var sourcesInput = document.querySelector('textarea[name="sources_input"]');
+
+    if (sourceTable && sourcesInput) {
+        sourceTable.addEventListener("click", function (event) {
+            var target = event.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+
+            var removeBtn = target.closest(".source-row-remove");
+            if (!removeBtn) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            var source = String(removeBtn.getAttribute("data-source") || "");
+            var row = removeBtn.closest("tr");
+            if (row) {
+                row.remove();
+            }
+            removeSourceFromTextarea(sourcesInput, source);
+        });
+    }
+
+    var toggleManualBtn = document.getElementById("toggle-manual-checkpoint");
+    var manualForm = document.getElementById("manual-checkpoint-form");
+
+    if (toggleManualBtn && manualForm) {
+        toggleManualBtn.addEventListener("click", function () {
+            var willShow = !manualForm.classList.contains("active");
+            if (willShow) {
+                manualForm.classList.add("active");
+                toggleManualBtn.textContent = "收起手动创建";
+            } else {
+                manualForm.classList.remove("active");
+                toggleManualBtn.textContent = "手动创建";
+            }
+        });
+    }
+})();
+</script>
+{% endblock %}

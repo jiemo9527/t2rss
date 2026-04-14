@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>Telegram 会话管理</h2>
+    <p>统一会话文件名为 <code>t2rss.session</code>。上传任意 <code>.session</code> 文件后会自动重命名。</p>
+    <p>会话文件路径：<code>{{ session_path }}</code></p>
+
+    {% if session_exists %}
+    <p>会话状态：<strong>已存在</strong></p>
+    <ul class="kv-list">
+        <li><span>文件大小</span><strong>{{ session_info.size_bytes }} 字节</strong></li>
+        <li><span>更新时间（上海时间）</span><strong>{{ session_info.updated_at }}</strong></li>
+    </ul>
+    {% else %}
+    <p>会话状态：<strong>缺失</strong></p>
+    {% endif %}
+
+    <h3>上传已有会话文件</h3>
+    <form method="post" action="/session/upload" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".session" required>
+        <button type="submit">上传并保存为 t2rss.session</button>
+    </form>
+
+    <h3>删除当前会话文件</h3>
+    <form method="post" action="/session/delete">
+        <button class="button-danger" type="submit" {% if not session_exists %}disabled{% endif %}>删除会话</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>在容器内创建会话</h2>
+    <p>如果需要重新登录 Telegram，请在服务器执行以下命令并按提示操作：</p>
+    <pre>docker exec -it t2rss-web-panel python tools/create_session.py</pre>
+</section>
+{% endblock %}

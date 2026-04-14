@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid two">
+    <article class="card">
+        <h2>运行状态</h2>
+        <ul class="kv-list">
+            <li><span>转发任务</span><strong>{{ "运行中" if runner_status.is_running else "空闲" }}</strong></li>
+            <li><span>任务开始时间</span><strong>{{ runner_status.current_started_at or "-" }}</strong></li>
+            <li><span>会话文件</span><strong>{{ "已存在" if session_exists else "缺失" }}</strong></li>
+            <li><span>锁文件</span><strong>{{ "已存在" if lock_exists else "不存在" }}</strong></li>
+            <li><span>测试模式</span><strong>{{ "已开启（不真实转发）" if config_preview.test_mode_enabled else "已关闭" }}</strong></li>
+            <li><span>总超时</span><strong>{{ config_preview.total_timeout_seconds }} 秒</strong></li>
+            <li><span>自动运行</span><strong>{{ "已开启" if config_preview.auto_run_enabled else "已关闭" }}</strong></li>
+            <li><span>自动运行间隔</span><strong>{{ config_preview.auto_run_interval_minutes }} 分钟</strong></li>
+        </ul>
+        <form method="post" action="/run" class="inline-form">
+            <button type="submit" {% if runner_status.is_running %}disabled{% endif %}>立即执行转发</button>
+        </form>
+        <form method="post" action="/run/stop" class="inline-form">
+            <button class="button-danger" type="submit" {% if not runner_status.is_running %}disabled{% endif %}>强制中止运行</button>
+        </form>
+    </article>
+
+    <article class="card">
+        <h2>转发配置快照</h2>
+        <ul class="kv-list">
+            <li>
+                <span>目标频道</span>
+                <strong>
+                    {% if config_preview.destination_url %}
+                    <a class="inline-link" href="{{ config_preview.destination_url }}" target="_blank" rel="noopener noreferrer">{{ config_preview.destination_display }}</a>
+                    {% else %}
+                    {{ config_preview.destination_channel or "（未设置）" }}
+                    {% endif %}
+                </strong>
+            </li>
+            <li><span>关键词拦截黑名单</span><strong>{{ config_preview.keyword_blacklist_count }} 条</strong></li>
+            <li><span>雷锋黑名单</span><strong>{{ config_preview.user_id_blacklist_count }} 条</strong></li>
+            <li><span>来源频道（启用/总）</span><strong>{{ config_preview.source_summary }}</strong></li>
+            <li><span>测试模式</span><strong>{{ "已开启" if config_preview.test_mode_enabled else "已关闭" }}</strong></li>
+            <li><span>去重开关</span><strong>{{ "true" if config_preview.deduplication_enabled == "true" else "false" }}</strong></li>
+            <li><span>去重扫描条数</span><strong>{{ config_preview.deduplication_cache_size }}</strong></li>
+        </ul>
+    </article>
+</section>
+
+<section class="card">
+    <h2>实时运行日志</h2>
+    <div class="log-toolbar">
+        <button type="button" id="log-refresh-btn">立即刷新</button>
+        <button type="button" id="log-clear-btn" class="button-danger">清空日志</button>
+        <label class="checkbox-row log-autoscroll">
+            <input type="checkbox" id="log-autoscroll" checked>
+            自动滚动到底部
+        </label>
+        <span id="log-refresh-status" class="field-hint">正在加载日志...</span>
+    </div>
+    <pre id="live-log-output" class="log-output">正在读取日志...</pre>
+</section>
+
+<section class="card">
+    <h2>断点进度</h2>
+    {% if last_ids %}
+    <table>
+        <thead>
+        <tr>
+            <th>频道 ID</th>
+            <th>最后处理消息 ID</th>
+            <th>更新时间（上海时间）</th>
+            <th>状态</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for item in last_ids %}
+        <tr>
+            <td>{{ item.channel_id }}</td>
+            <td>{{ item.last_id }}</td>
+            <td>{{ item.updated_at }}</td>
+            <td>{{ item.status_text }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>暂无断点记录。</p>
+    {% endif %}
+</section>
+
+<script>
+(function () {
+    var output = document.getElementById("live-log-output");
+    var status = document.getElementById("log-refresh-status");
+    var autoScroll = document.getElementById("log-autoscroll");
+    var refreshBtn = document.getElementById("log-refresh-btn");
+    var clearBtn = document.getElementById("log-clear-btn");
+    var lastContent = "";
+
+    function applyContent(content) {
+        if (content === lastContent) {
+            return;
+        }
+
+        output.textContent = content || "暂无日志输出。";
+        lastContent = content;
+
+        if (autoScroll && autoScroll.checked) {
+            output.scrollTop = output.scrollHeight;
+        }
+    }
+
+    async function fetchLogs() {
+        try {
+            var response = await fetch("/api/logs/tail?lines=300", {
+                cache: "no-store",
+                credentials: "same-origin"
+            });
+
+            if (!response.ok) {
+                status.textContent = "日志拉取失败（HTTP " + response.status + "）";
+                return;
+            }
+
+            var payload = await response.json();
+            applyContent(payload.log_text || "");
+            status.textContent = "最后刷新: " + (payload.updated_at || "-");
+        } catch (error) {
+            status.textContent = "日志拉取失败: " + (error && error.message ? error.message : String(error));
+        }
+    }
+
+    async function clearLogs() {
+        if (!confirm("确认清空实时日志吗？")) {
+            return;
+        }
+
+        try {
+            var response = await fetch("/api/logs/clear", {
+                method: "POST",
+                cache: "no-store",
+                credentials: "same-origin"
+            });
+
+            if (!response.ok) {
+                status.textContent = "日志清空失败（HTTP " + response.status + "）";
+                return;
+            }
+
+            var payload = await response.json();
+            applyContent("");
+            status.textContent = (payload.message || "日志已清空") + " 最后刷新: " + (payload.updated_at || "-");
+            await fetchLogs();
+        } catch (error) {
+            status.textContent = "日志清空失败: " + (error && error.message ? error.message : String(error));
+        }
+    }
+
+    if (refreshBtn) {
+        refreshBtn.addEventListener("click", function () {
+            fetchLogs();
+        });
+    }
+
+    if (clearBtn) {
+        clearBtn.addEventListener("click", function () {
+            clearLogs();
+        });
+    }
+
+    fetchLogs();
+    setInterval(fetchLogs, 2000);
+})();
+</script>
+{% endblock %}

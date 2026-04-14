@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>配置管理</h2>
+    <p>页面保存后写入 <code>data/config.env</code>，容器重启后自动保留。</p>
+    <p><strong>重要：</strong>新增频道转发必须先通过下方工具解析 CID，再写入 <code>CHANNEL_IDS</code>。运行任务仅读取 <code>CHANNEL_IDS</code>。</p>
+    <p><strong>会话密钥：</strong><code>PANEL_SESSION_SECRET</code> 不提供网页修改入口，如需修改请通过 <code>docker exec</code> 进入容器编辑 <code>/app/data/config.env</code> 后重启容器。</p>
+
+    <form method="post" action="/settings">
+        <div class="settings-group">
+            <h3>一、管理员与安全</h3>
+            <div class="form-grid">
+                <label>
+                    PANEL_ADMIN_USERNAME（管理员账号）
+                    <input type="text" name="PANEL_ADMIN_USERNAME" value="{{ config.get('PANEL_ADMIN_USERNAME', 'admin') }}">
+                    <small class="field-hint">用于后台登录的管理员用户名。</small>
+                </label>
+
+                <label>
+                    PANEL_LOGIN_MAX_FAILURES（触发锁定前失败次数）
+                    <input type="number" min="1" name="PANEL_LOGIN_MAX_FAILURES" value="{{ config.get('PANEL_LOGIN_MAX_FAILURES', '5') }}">
+                    <small class="field-hint">同一来源在时间窗内失败达到该次数后触发锁定。</small>
+                </label>
+
+                <label>
+                    PANEL_LOGIN_WINDOW_SECONDS（统计时间窗，秒）
+                    <input type="number" min="1" name="PANEL_LOGIN_WINDOW_SECONDS" value="{{ config.get('PANEL_LOGIN_WINDOW_SECONDS', '600') }}">
+                    <small class="field-hint">登录失败次数的统计窗口时长。</small>
+                </label>
+
+                <label>
+                    PANEL_LOGIN_LOCK_SECONDS（锁定时长，秒）
+                    <input type="number" min="1" name="PANEL_LOGIN_LOCK_SECONDS" value="{{ config.get('PANEL_LOGIN_LOCK_SECONDS', '900') }}">
+                    <small class="field-hint">触发防爆破后禁止继续登录的时长。</small>
+                </label>
+
+                <label>
+                    管理员新密码（留空表示不修改）
+                    <input type="password" name="PANEL_ADMIN_NEW_PASSWORD" value="">
+                    <small class="field-hint">建议至少 12 位，包含大小写字母、数字与符号。</small>
+                </label>
+
+                <label>
+                    确认管理员新密码
+                    <input type="password" name="PANEL_ADMIN_NEW_PASSWORD_CONFIRM" value="">
+                    <small class="field-hint">必须与上方新密码一致。</small>
+                </label>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>二、Telegram 接入参数</h3>
+            <div class="form-grid">
+                <label>
+                    API_ID
+                    <input type="text" name="API_ID" value="{{ config.get('API_ID', '') }}">
+                    <small class="field-hint">Telegram 开发者平台申请的 API_ID。</small>
+                </label>
+
+                <label>
+                    API_HASH
+                    <input type="text" name="API_HASH" value="{{ config.get('API_HASH', '') }}">
+                    <small class="field-hint">Telegram 开发者平台申请的 API_HASH。</small>
+                </label>
+
+                <label>
+                    PHONE
+                    <input type="text" name="PHONE" value="{{ config.get('PHONE', '') }}">
+                    <small class="field-hint">用于创建会话时的手机号，格式示例：+8613812345678。</small>
+                </label>
+
+                <label>
+                    PASSWORD（两步验证）
+                    <input type="password" name="PASSWORD" value="{{ config.get('PASSWORD', '') }}">
+                    <small class="field-hint">如果 Telegram 账号开启两步验证，需要填写该密码。</small>
+                </label>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>三、转发通道配置</h3>
+            <div class="form-grid">
+                <label>
+                    DESTINATION_CHANNEL
+                    <input type="text" name="DESTINATION_CHANNEL" value="{{ config.get('DESTINATION_CHANNEL', '') }}">
+                    <small class="field-hint">目标频道用户名或可被 Telethon 识别的目标实体。</small>
+                </label>
+
+                <label>
+                    CHANNEL_IDS（英文逗号分隔）
+                    <input type="text" name="CHANNEL_IDS" value="{{ config.get('CHANNEL_IDS', '') }}">
+                    <small class="field-hint">必须填写，示例：123456789,987654321。</small>
+                </label>
+
+                <label>
+                    CHANNEL_IDENTIFIERS（仅保存，不参与转发）
+                    <input type="text" name="CHANNEL_IDENTIFIERS" value="{{ config.get('CHANNEL_IDENTIFIERS', '') }}">
+                    <small class="field-hint">可保存来源用户名/邀请后缀，建议先在下方解析为 CID 再写入 CHANNEL_IDS。</small>
+                </label>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>四、过滤与去重策略</h3>
+            <div class="form-grid">
+                <label>
+                    KEYWORD_BLACKLIST（英文逗号分隔）
+                    <input type="text" name="KEYWORD_BLACKLIST" value="{{ config.get('KEYWORD_BLACKLIST', '') }}">
+                    <small class="field-hint">命中关键词即跳过转发，大小写不敏感。</small>
+                </label>
+
+                <label>
+                    USER_ID_BLACKLIST（用户 ID，英文逗号分隔）
+                    <input type="text" name="USER_ID_BLACKLIST" value="{{ config.get('USER_ID_BLACKLIST', '') }}">
+                    <small class="field-hint">命中黑名单用户 ID 的提及消息将被跳过。</small>
+                </label>
+
+                <label>
+                    DEDUPLICATION_CACHE_SIZE
+                    <input type="number" min="1" name="DEDUPLICATION_CACHE_SIZE" value="{{ config.get('DEDUPLICATION_CACHE_SIZE', '200') }}">
+                    <small class="field-hint">目标频道去重时扫描的历史消息条数。</small>
+                </label>
+
+                <label class="checkbox-row">
+                    <input type="checkbox" name="DEDUPLICATION_ENABLED" {% if config.get('DEDUPLICATION_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                    开启夸克链接去重
+                </label>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>五、调度与自动运行</h3>
+            <div class="form-grid">
+                <label class="checkbox-row">
+                    <input type="checkbox" name="PANEL_TEST_MODE_ENABLED" {% if config.get('PANEL_TEST_MODE_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                    开启测试模式（仅测试，不真实转发）
+                </label>
+
+                <label>
+                    PANEL_TOTAL_TIMEOUT_SECONDS（总超时秒数）
+                    <input type="number" min="60" name="PANEL_TOTAL_TIMEOUT_SECONDS" value="{{ config.get('PANEL_TOTAL_TIMEOUT_SECONDS', '600') }}">
+                    <small class="field-hint">单次运行总超时，默认 600 秒；超时后自动中止任务。</small>
+                </label>
+
+                <label class="checkbox-row">
+                    <input type="checkbox" name="PANEL_AUTO_RUN_ENABLED" {% if config.get('PANEL_AUTO_RUN_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                    开启内置自动运行
+                </label>
+
+                <label>
+                    PANEL_AUTO_RUN_INTERVAL_MINUTES
+                    <input type="number" min="1" name="PANEL_AUTO_RUN_INTERVAL_MINUTES" value="{{ config.get('PANEL_AUTO_RUN_INTERVAL_MINUTES', '15') }}">
+                    <small class="field-hint">自动运行间隔（分钟）。</small>
+                </label>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">保存配置</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h2>CID 解析工具（新增频道必经步骤）</h2>
+    <p>将用户名或邀请后缀解析为数字频道 ID，解析成功后请点击“写入 CHANNEL_IDS”。</p>
+
+    <form method="post" action="/settings/resolve">
+        <textarea name="identifiers_input" rows="4" placeholder="示例: durov, +AbcInviteSuffix">{{ resolve_input }}</textarea>
+        <button type="submit">解析为数字 CID</button>
+    </form>
+
+    {% if resolve_results %}
+    <table>
+        <thead>
+        <tr>
+            <th>标识符</th>
+            <th>状态</th>
+            <th>频道 CID</th>
+            <th>错误信息</th>
+            <th>操作</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for item in resolve_results %}
+        <tr>
+            <td>{{ item.identifier }}</td>
+            <td>{{ "成功" if item.ok else "失败" }}</td>
+            <td>{{ item.channel_id }}</td>
+            <td>{{ item.error }}</td>
+            <td>
+                {% if item.ok %}
+                <form method="post" action="/settings/add-cid" class="inline-form">
+                    <input type="hidden" name="channel_id" value="{{ item.channel_id }}">
+                    <button type="submit">写入 CHANNEL_IDS</button>
+                </form>
+                {% else %}
+                -
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+{% endblock %}

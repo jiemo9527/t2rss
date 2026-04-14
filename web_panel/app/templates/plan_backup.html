@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>计划与备份</h2>
+    <p>包含调度与自动运行配置、备份创建/下载/删除、备份恢复。</p>
+
+    <form method="post" action="/plan-backup/save">
+        <div class="settings-group">
+            <h3>一、调度与自动运行</h3>
+            <div class="form-grid">
+                <label class="checkbox-row">
+                    <input type="checkbox" name="PANEL_TEST_MODE_ENABLED" {% if config.get('PANEL_TEST_MODE_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                    开启测试模式（仅测试，不真实转发）
+                </label>
+
+                <label>
+                    PANEL_TOTAL_TIMEOUT_SECONDS（总超时秒数）
+                    <input type="number" min="60" name="PANEL_TOTAL_TIMEOUT_SECONDS" value="{{ config.get('PANEL_TOTAL_TIMEOUT_SECONDS', '600') }}">
+                    <small class="field-hint">单次运行总超时，默认 600 秒；超时后自动中止任务。</small>
+                </label>
+
+                <label class="checkbox-row">
+                    <input type="checkbox" name="PANEL_AUTO_RUN_ENABLED" {% if config.get('PANEL_AUTO_RUN_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                    开启内置自动运行
+                </label>
+
+                <label>
+                    PANEL_AUTO_RUN_INTERVAL_MINUTES
+                    <input type="number" min="1" name="PANEL_AUTO_RUN_INTERVAL_MINUTES" value="{{ config.get('PANEL_AUTO_RUN_INTERVAL_MINUTES', '15') }}">
+                    <small class="field-hint">自动运行间隔（分钟）。</small>
+                </label>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">保存调度配置</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h2>备份与恢复</h2>
+    <p>备份会打包 <code>data/</code> 下的持久化数据（不包含备份目录自身）。恢复会覆盖当前系统数据，并先自动创建回滚备份。</p>
+
+    <div class="grid two">
+        <article class="card">
+            <h3>创建备份</h3>
+            <form method="post" action="/plan-backup/backups/create">
+                <button type="submit">创建备份</button>
+            </form>
+        </article>
+
+        <article class="card">
+            <h3>上传并恢复</h3>
+            <form method="post" action="/plan-backup/backups/restore-upload" enctype="multipart/form-data">
+                <label>
+                    上传备份文件（.zip）并恢复
+                    <input type="file" name="file" accept=".zip" required>
+                </label>
+                <button class="button-danger" type="submit">上传并恢复</button>
+            </form>
+        </article>
+    </div>
+
+    <h3>现有备份文件</h3>
+    {% if backups %}
+    <table>
+        <thead>
+        <tr>
+            <th>备份文件名</th>
+            <th>修改时间（上海时间）</th>
+            <th>大小（字节）</th>
+            <th>操作</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for backup in backups %}
+        <tr>
+            <td>{{ backup.name }}</td>
+            <td>{{ backup.modified_at }}</td>
+            <td>{{ backup.size_bytes }}</td>
+            <td>
+                <a class="inline-link" href="/plan-backup/backups/download/{{ backup.name }}">下载</a>
+                <form class="inline-form" method="post" action="/plan-backup/backups/restore/{{ backup.name }}">
+                    <button class="button-danger" type="submit">恢复</button>
+                </form>
+                <form class="inline-form" method="post" action="/plan-backup/backups/delete/{{ backup.name }}">
+                    <button class="button-danger" type="submit">删除</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>暂无备份文件。</p>
+    {% endif %}
+</section>
+{% endblock %}

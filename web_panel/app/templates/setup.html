@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>初始化接入</h2>
+    <p>包含管理员与安全、Telegram 接入参数、会话管理。</p>
+    <p><strong>会话密钥：</strong><code>PANEL_SESSION_SECRET</code> 首次自动生成，需通过 <code>docker exec</code> 手工修改。</p>
+
+    <form method="post" action="/setup/save">
+        <div class="settings-group">
+            <h3>一、管理员与安全</h3>
+            <div class="admin-credential-bar">
+                <div>
+                    <div class="field-label">当前管理员账号</div>
+                    <strong>{{ config.get('PANEL_ADMIN_USERNAME', 'admin') }}</strong>
+                </div>
+                <button type="button" class="button-secondary" id="open-admin-credentials-dialog">修改用户名和密码</button>
+            </div>
+            <div class="form-grid">
+                <label>
+                    PANEL_LOGIN_MAX_FAILURES（触发锁定前失败次数）
+                    <input type="number" min="1" name="PANEL_LOGIN_MAX_FAILURES" value="{{ config.get('PANEL_LOGIN_MAX_FAILURES', '5') }}">
+                    <small class="field-hint">同一来源在时间窗内失败达到该次数后触发锁定。</small>
+                </label>
+
+                <label>
+                    PANEL_LOGIN_WINDOW_SECONDS（统计时间窗，秒）
+                    <input type="number" min="1" name="PANEL_LOGIN_WINDOW_SECONDS" value="{{ config.get('PANEL_LOGIN_WINDOW_SECONDS', '600') }}">
+                    <small class="field-hint">登录失败次数的统计窗口时长。</small>
+                </label>
+
+                <label>
+                    PANEL_LOGIN_LOCK_SECONDS（锁定时长，秒）
+                    <input type="number" min="1" name="PANEL_LOGIN_LOCK_SECONDS" value="{{ config.get('PANEL_LOGIN_LOCK_SECONDS', '900') }}">
+                    <small class="field-hint">触发防爆破后禁止继续登录的时长。</small>
+                </label>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>二、Telegram 接入参数</h3>
+            <div class="form-grid">
+                <label>
+                    API_ID
+                    <input type="password" name="API_ID" value="" placeholder="{% if config.get('API_ID', '') %}已保存，留空保持不变{% else %}请输入 API_ID{% endif %}">
+                    <small class="field-hint">敏感字段不回显；留空表示保持已保存值不变。</small>
+                </label>
+
+                <label>
+                    API_HASH
+                    <input type="password" name="API_HASH" value="" placeholder="{% if config.get('API_HASH', '') %}已保存，留空保持不变{% else %}请输入 API_HASH{% endif %}">
+                    <small class="field-hint">敏感字段不回显；留空表示保持已保存值不变。</small>
+                </label>
+
+                <label>
+                    PHONE
+                    <input type="password" name="PHONE" value="" placeholder="{% if config.get('PHONE', '') %}已保存，留空保持不变{% else %}请输入手机号（如 +8613812345678）{% endif %}">
+                    <small class="field-hint">敏感字段不回显；留空表示保持已保存值不变。</small>
+                </label>
+
+                <label>
+                    PASSWORD（两步验证）
+                    <input type="password" name="PASSWORD" value="" placeholder="{% if config.get('PASSWORD', '') %}已保存，留空保持不变{% else %}请输入两步验证密码（如有）{% endif %}">
+                    <small class="field-hint">敏感字段不回显；留空表示保持已保存值不变。</small>
+                </label>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">保存初始化接入配置</button>
+        </div>
+    </form>
+</section>
+
+<dialog id="admin-credentials-dialog" class="admin-credentials-dialog">
+    <form method="post" action="/setup/admin-credentials-save" class="admin-credentials-form">
+        <h3>修改管理员登录信息</h3>
+        <p class="field-hint">保存前会校验当前密码。用户名和密码可单独修改。</p>
+
+        <label>
+            当前管理员账号
+            <input type="text" value="{{ config.get('PANEL_ADMIN_USERNAME', 'admin') }}" disabled>
+        </label>
+
+        <label>
+            当前密码（必填）
+            <input type="password" name="PANEL_ADMIN_OLD_PASSWORD" required>
+        </label>
+
+        <label>
+            新管理员账号（留空不修改）
+            <input type="text" name="PANEL_ADMIN_USERNAME" placeholder="{{ config.get('PANEL_ADMIN_USERNAME', 'admin') }}">
+        </label>
+
+        <label>
+            新密码（留空不修改）
+            <input type="password" name="PANEL_ADMIN_NEW_PASSWORD">
+        </label>
+
+        <label>
+            确认新密码
+            <input type="password" name="PANEL_ADMIN_NEW_PASSWORD_CONFIRM">
+        </label>
+
+        <div class="dialog-actions">
+            <button type="submit">保存登录信息</button>
+            <button type="button" class="button-secondary" id="close-admin-credentials-dialog">取消</button>
+        </div>
+    </form>
+</dialog>
+
+<section class="card">
+    <h2>会话管理</h2>
+    <p>统一会话文件名为 <code>t2rss.session</code>。上传任意 <code>.session</code> 文件后会自动重命名并覆盖旧会话。</p>
+
+    <div class="session-panels">
+        <article class="session-panel">
+            <h3>当前会话状态</h3>
+            <p>会话文件路径：<code>{{ session_path }}</code></p>
+            {% if session_exists %}
+            <p>状态：<strong>已存在</strong></p>
+            <ul class="kv-list">
+                <li><span>文件大小</span><strong>{{ session_info.size_bytes }} 字节</strong></li>
+                <li><span>更新时间（上海时间）</span><strong>{{ session_info.updated_at }}</strong></li>
+            </ul>
+            {% else %}
+            <p>状态：<strong>缺失</strong></p>
+            <p class="field-hint">请先上传已有会话，或在容器内执行创建命令。</p>
+            {% endif %}
+        </article>
+
+        <article class="session-panel">
+            <h3>上传已有会话文件</h3>
+            <p class="field-hint">支持任意文件名的 <code>.session</code>，保存后统一为 <code>t2rss.session</code>。</p>
+            <form method="post" action="/session/upload" enctype="multipart/form-data" class="session-action-form">
+                <input type="file" name="file" accept=".session" required>
+                <button type="submit">上传并保存为 t2rss.session</button>
+            </form>
+        </article>
+
+        <article class="session-panel">
+            <h3>删除当前会话文件</h3>
+            <p class="field-hint">会同时清理当前会话和历史旧命名会话残留文件。</p>
+            <form method="post" action="/session/delete" class="session-action-form">
+                <button class="button-danger" type="submit" {% if not session_exists %}disabled{% endif %}>删除会话文件</button>
+            </form>
+        </article>
+
+        <article class="session-panel">
+            <h3>容器内创建会话</h3>
+            <p>如果需要重新登录 Telegram，请执行以下命令并按提示操作：</p>
+            <pre>docker exec -it t2rss-web-panel python tools/create_session.py</pre>
+        </article>
+    </div>
+</section>
+
+<script>
+(function () {
+    var dialog = document.getElementById("admin-credentials-dialog");
+    var openBtn = document.getElementById("open-admin-credentials-dialog");
+    var closeBtn = document.getElementById("close-admin-credentials-dialog");
+
+    if (!dialog || !openBtn || !closeBtn) {
+        return;
+    }
+
+    openBtn.addEventListener("click", function () {
+        if (typeof dialog.showModal === "function") {
+            dialog.showModal();
+            return;
+        }
+        dialog.setAttribute("open", "open");
+    });
+
+    closeBtn.addEventListener("click", function () {
+        if (typeof dialog.close === "function") {
+            dialog.close();
+            return;
+        }
+        dialog.removeAttribute("open");
+    });
+})();
+</script>
+{% endblock %}

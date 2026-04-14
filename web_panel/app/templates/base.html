@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script>
+        (function () {
+            var theme = "ocean";
+            try {
+                theme = localStorage.getItem("t2rss_theme") || "ocean";
+            } catch (e) {
+                theme = "ocean";
+            }
+            document.documentElement.setAttribute("data-theme", theme);
+        })();
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+    <div class="container topbar-content">
+        <div>
+            <h1>T2RSS 管理面板</h1>
+            <p>Telegram 多频道转发可视化管理</p>
+        </div>
+        <nav class="topnav">
+            <a href="/">仪表盘</a>
+            <a href="/setup">初始化接入</a>
+            <a href="/forward-settings">转发设置</a>
+            <a href="/plan-backup">计划与备份</a>
+            <a href="/logout">退出登录</a>
+        </nav>
+        <div class="theme-switch">
+            <label for="theme-select">主题</label>
+            <select id="theme-select" class="theme-select">
+                <option value="ocean">海湾蓝</option>
+                <option value="sunrise">晨曦橙</option>
+                <option value="forest">森林绿</option>
+                <option value="slate">岩灰夜</option>
+            </select>
+        </div>
+    </div>
+</header>
+
+<main class="container">
+    {% if msg %}
+    <div class="flash flash-{{ level }}">{{ msg }}</div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+</main>
+<script>
+(function () {
+    var select = document.getElementById("theme-select");
+    if (!select) {
+        return;
+    }
+
+    var current = document.documentElement.getAttribute("data-theme") || "ocean";
+    select.value = current;
+
+    select.addEventListener("change", function () {
+        var value = select.value || "ocean";
+        document.documentElement.setAttribute("data-theme", value);
+        try {
+            localStorage.setItem("t2rss_theme", value);
+        } catch (e) {
+            // 忽略本地存储异常
+        }
+    });
+})();
+</script>
+</body>
+</html>

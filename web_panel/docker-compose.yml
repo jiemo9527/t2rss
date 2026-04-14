@@ -1,0 +1,10 @@
+services:
+  t2rss-web:
+    build: .
+    image: t2rss-web-panel:latest
+    container_name: t2rss-web-panel
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./data:/app/data

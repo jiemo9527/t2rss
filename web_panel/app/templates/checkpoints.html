@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>last_id 断点数据库管理</h2>
+    <p>当前断点已改为数据库存储，不再依赖 <code>last_id.txt</code> 文件。</p>
+    <p>兼容规则：旧版目录中每个 <code>&lt;CID&gt;.txt</code> 文件，文件名即频道 CID，文件内容数值即该 CID 对应的 last_id，系统会在启动时自动迁移。</p>
+
+    <form method="post" action="/checkpoints/upsert" class="form-grid">
+        <label>
+            频道 ID
+            <input type="number" name="channel_id" required>
+        </label>
+        <label>
+            last_id
+            <input type="number" min="0" name="last_id" required>
+        </label>
+        <div class="form-actions">
+            <button type="submit">创建或更新断点</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h2>已有断点列表</h2>
+    {% if last_ids %}
+    <table>
+        <thead>
+        <tr>
+            <th>频道 ID</th>
+            <th>last_id</th>
+            <th>更新时间（上海时间）</th>
+            <th>修改</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for item in last_ids %}
+        <tr>
+            <td>{{ item.channel_id }}</td>
+            <td>{{ item.last_id }}</td>
+            <td>{{ item.updated_at }}</td>
+            <td>
+                <form method="post" action="/checkpoints/upsert" class="inline-form">
+                    <input type="hidden" name="channel_id" value="{{ item.channel_id }}">
+                    <input type="number" min="0" name="last_id" value="{{ item.last_id }}" required style="width: 120px;">
+                    <button type="submit">保存</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>暂无断点记录。</p>
+    {% endif %}
+</section>
+{% endblock %}
