@@ -24,6 +24,10 @@ SEND_RETRY_BASE_DELAY_SECONDS = 2
 SEND_INTERVAL_SECONDS = 3
 
 
+def _is_exact_quark_trigger_text(text: Optional[str]) -> bool:
+    return str(text or "").strip() == BOT_TRIGGER_PHRASE
+
+
 def extract_quark_link(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
@@ -192,7 +196,7 @@ async def _resolve_link_via_bot(
     bot_link_cache: Dict[str, Optional[str]],
 ) -> Optional[str]:
     message_text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
-    if BOT_TRIGGER_PHRASE not in message_text:
+    if not _is_exact_quark_trigger_text(message_text):
         return None
 
     message_id = getattr(message, "id", "unknown")
@@ -479,10 +483,10 @@ async def _forward_single_message(
         resolved_url = pre_resolved_url
         if not resolved_url:
             resolved_url = await _resolve_link_via_bot(client, message, logger, bot_link_cache)
-        if resolved_url and outbound_text and BOT_TRIGGER_PHRASE in outbound_text:
-            outbound_text = outbound_text.replace(BOT_TRIGGER_PHRASE, resolved_url)
-        elif resolved_url and outbound_text and BOT_TRIGGER_PHRASE not in outbound_text:
-            logger.info("消息 %s 获取到链接，但未命中替换词，保持原文发送。", getattr(message, "id", "unknown"))
+        if resolved_url and _is_exact_quark_trigger_text(outbound_text):
+            outbound_text = resolved_url
+        elif resolved_url:
+            logger.info("消息 %s 获取到链接，但文本不是精确“点击获取夸克链接”，保持原文发送。", getattr(message, "id", "unknown"))
 
         if outbound_text:
             outbound_text, term_hits, regex_hits = _apply_text_replacements(
