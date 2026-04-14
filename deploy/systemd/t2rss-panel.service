@@ -1,0 +1,17 @@
+[Unit]
+Description=T2RSS Web Panel (Docker Compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/root/t2rss
+ExecStart=/usr/bin/docker compose --project-directory /root/t2rss -f /root/t2rss/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose --project-directory /root/t2rss -f /root/t2rss/docker-compose.yml down
+ExecReload=/usr/bin/docker compose --project-directory /root/t2rss -f /root/t2rss/docker-compose.yml up -d
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

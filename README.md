@@ -148,14 +148,36 @@ cd web_panel
 docker compose down
 ```
 
-## 8. 常见问题
+## 8. systemd 自启服务
+
+仓库已提供 systemd 服务模板：`deploy/systemd/t2rss-panel.service`
+
+适用于你的部署目录为 `/root/t2rss`（即 `docker-compose.yml` 在 `/root/t2rss/docker-compose.yml`）。
+
+安装与启用：
+
+```bash
+sudo cp deploy/systemd/t2rss-panel.service /etc/systemd/system/t2rss-panel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now t2rss-panel
+```
+
+常用操作：
+
+```bash
+sudo systemctl status t2rss-panel
+sudo systemctl restart t2rss-panel
+sudo journalctl -u t2rss-panel -f
+```
+
+## 9. 常见问题
 
 - 登录被锁：等待 `PANEL_LOGIN_LOCK_SECONDS` 到期，或在配置中调整锁定策略。
 - 提示会话缺失：重新上传会话或在容器里运行 `tools/create_session.py`。
 - 没有转发：检查来源是否已解析到 CID 且处于启用状态，目标频道是否可访问。
 - 去重看起来不生效：确认 `DEDUPLICATION_ENABLED=true`，并适当增大 `DEDUPLICATION_CACHE_SIZE`。
 
-## 9. 分支说明
+## 10. 分支说明
 
 - `main`：Web 管理面板版本（当前主线）
 - `cli`：旧版 CLI 脚本版本

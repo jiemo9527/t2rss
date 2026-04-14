@@ -90,6 +90,26 @@ docker run -d --name t2rss-web-panel \
 image: wanxve0000/t2rss-web-panel:latest
 ```
 
+## systemd 自启服务（/root/t2rss）
+
+仓库提供了 systemd 服务模板：`../deploy/systemd/t2rss-panel.service`
+
+当你的部署目录是 `/root/t2rss` 时可直接使用：
+
+```bash
+sudo cp ../deploy/systemd/t2rss-panel.service /etc/systemd/system/t2rss-panel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now t2rss-panel
+```
+
+常用命令：
+
+```bash
+sudo systemctl status t2rss-panel
+sudo systemctl restart t2rss-panel
+sudo journalctl -u t2rss-panel -f
+```
+
 ## 首次使用流程
 
 1. 打开 **初始化接入** 页面，填写管理员与 Telegram 接入参数。
