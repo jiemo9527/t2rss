@@ -24,8 +24,16 @@ SEND_RETRY_BASE_DELAY_SECONDS = 2
 SEND_INTERVAL_SECONDS = 3
 
 
-def _is_exact_quark_trigger_text(text: Optional[str]) -> bool:
-    return str(text or "").strip() == BOT_TRIGGER_PHRASE
+QUARK_TRIGGER_LINK_PAREN_PATTERN = re.compile(
+    rf"{re.escape(BOT_TRIGGER_PHRASE)}\s*[（(]\s*(?P<url>(?:https?://t\.me/[^\s)）]+|tg://resolve[^\s)）]+))\s*[)）]"
+)
+QUARK_TRIGGER_LINK_INLINE_PATTERN = re.compile(
+    rf"{re.escape(BOT_TRIGGER_PHRASE)}\s*(?P<url>(?:https?://t\.me/\S+|tg://resolve\S+))"
+)
+
+
+def _has_quark_trigger_phrase(text: Optional[str]) -> bool:
+    return BOT_TRIGGER_PHRASE in str(text or "")
 
 
 def extract_quark_link(text: Optional[str]) -> Optional[str]:
@@ -166,6 +174,94 @@ def _extract_bot_links_from_message(message) -> List[str]:
     return links
 
 
+def _extract_quark_trigger_bot_links_from_text(text: Optional[str]) -> List[str]:
+    content = str(text or "")
+    urls: List[str] = []
+    seen: Set[str] = set()
+
+    for match in QUARK_TRIGGER_LINK_PAREN_PATTERN.finditer(content):
+        url = _clean_url_token(match.group("url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+
+    for match in QUARK_TRIGGER_LINK_INLINE_PATTERN.finditer(content):
+        url = _clean_url_token(match.group("url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+
+    return urls
+
+
+def _extract_quark_trigger_bot_links(message) -> List[str]:
+    links: List[str] = []
+    seen: Set[str] = set()
+    message_text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+
+    for url in _extract_quark_trigger_bot_links_from_text(message_text):
+        if url in seen:
+            continue
+        seen.add(url)
+        links.append(url)
+
+    entities = getattr(message, "entities", None) or []
+    for entity in entities:
+        if not isinstance(entity, MessageEntityTextUrl):
+            continue
+
+        start = int(getattr(entity, "offset", 0) or 0)
+        length = int(getattr(entity, "length", 0) or 0)
+        entity_text = message_text[start : start + length] if length > 0 else ""
+        if BOT_TRIGGER_PHRASE not in entity_text:
+            continue
+
+        entity_url = _clean_url_token(str(getattr(entity, "url", "") or ""))
+        if not entity_url or entity_url in seen:
+            continue
+        seen.add(entity_url)
+        links.append(entity_url)
+
+    rows = getattr(message, "buttons", None) or []
+    for row in rows:
+        if row is None:
+            continue
+        button_items = row if isinstance(row, (list, tuple)) else [row]
+        for button in button_items:
+            if button is None:
+                continue
+            button_text = str(getattr(button, "text", "") or "")
+            if BOT_TRIGGER_PHRASE not in button_text:
+                continue
+
+            button_url = _clean_url_token(str(getattr(button, "url", "") or ""))
+            if not button_url:
+                raw_button = getattr(button, "button", None)
+                button_url = _clean_url_token(str(getattr(raw_button, "url", "") or ""))
+
+            if not button_url or button_url in seen:
+                continue
+            seen.add(button_url)
+            links.append(button_url)
+
+    return links
+
+
+def _replace_quark_trigger_segment(text: str, resolved_url: str) -> str:
+    content = str(text or "")
+    replacement = str(resolved_url or "").strip()
+    if not replacement:
+        return content
+
+    content, count_paren = QUARK_TRIGGER_LINK_PAREN_PATTERN.subn(replacement, content)
+    content, count_inline = QUARK_TRIGGER_LINK_INLINE_PATTERN.subn(replacement, content)
+    if count_paren == 0 and count_inline == 0 and BOT_TRIGGER_PHRASE in content:
+        content = content.replace(BOT_TRIGGER_PHRASE, replacement)
+    return content
+
+
 def _extract_url_from_bot_message(message) -> Optional[str]:
     message_text = getattr(message, "text", None) or getattr(message, "caption", None) or getattr(message, "raw_text", None)
     quark_link = extract_quark_link(message_text)
@@ -196,13 +292,13 @@ async def _resolve_link_via_bot(
     bot_link_cache: Dict[str, Optional[str]],
 ) -> Optional[str]:
     message_text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
-    if not _is_exact_quark_trigger_text(message_text):
+    if not _has_quark_trigger_phrase(message_text):
         return None
 
     message_id = getattr(message, "id", "unknown")
-    bot_links = _extract_bot_links_from_message(message)
+    bot_links = _extract_quark_trigger_bot_links(message)
     if not bot_links:
-        logger.info("消息 %s 含触发词，但未找到可跳转的 Bot 链接。", message_id)
+        logger.info("消息 %s 含夸克触发词，但未找到关联的 Bot 跳转链接。", message_id)
         return None
 
     for bot_link in bot_links:
@@ -483,10 +579,10 @@ async def _forward_single_message(
         resolved_url = pre_resolved_url
         if not resolved_url:
             resolved_url = await _resolve_link_via_bot(client, message, logger, bot_link_cache)
-        if resolved_url and _is_exact_quark_trigger_text(outbound_text):
-            outbound_text = resolved_url
+        if resolved_url and _has_quark_trigger_phrase(outbound_text):
+            outbound_text = _replace_quark_trigger_segment(outbound_text, resolved_url)
         elif resolved_url:
-            logger.info("消息 %s 获取到链接，但文本不是精确“点击获取夸克链接”，保持原文发送。", getattr(message, "id", "unknown"))
+            logger.info("消息 %s 获取到夸克链接，但正文无触发词，保持原文发送。", getattr(message, "id", "unknown"))
 
         if outbound_text:
             outbound_text, term_hits, regex_hits = _apply_text_replacements(
