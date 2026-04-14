@@ -3,14 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>管理员登录</title>
+    <title>L0gin</title>
     <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
 </head>
 <body>
 <main class="container" style="max-width: 520px; padding-top: 2.5rem;">
     <section class="card">
-        <h2>管理员安全登录</h2>
-        <p>已启用登录防爆破保护：连续失败会触发临时锁定。</p>
 
         {% if msg %}
         <div class="flash flash-{{ level }}">{{ msg }}</div>
@@ -20,12 +18,12 @@
             <input type="hidden" name="next" value="{{ next }}">
 
             <label>
-                管理员账号
+                add
                 <input type="text" name="username" autocomplete="username" required>
             </label>
 
             <label>
-                管理员密码
+                pwd
                 <input type="password" name="password" autocomplete="current-password" required>
             </label>
 
