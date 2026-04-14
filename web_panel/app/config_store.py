@@ -17,6 +17,8 @@ FORWARDER_ENV_KEYS = [
     "CHANNEL_IDENTIFIERS",
     "CHANNEL_SOURCES_JSON",
     "KEYWORD_BLACKLIST",
+    "TEXT_REPLACEMENT_TERMS",
+    "TEXT_REPLACEMENT_REGEX",
     "USER_ID_BLACKLIST",
     "DEDUPLICATION_ENABLED",
     "DEDUPLICATION_CACHE_SIZE",
@@ -48,6 +50,8 @@ DEFAULT_ENV_VALUES = {
     "CHANNEL_IDENTIFIERS": "",
     "CHANNEL_SOURCES_JSON": "[]",
     "KEYWORD_BLACKLIST": "",
+    "TEXT_REPLACEMENT_TERMS": "",
+    "TEXT_REPLACEMENT_REGEX": "",
     "USER_ID_BLACKLIST": "",
     "DEDUPLICATION_ENABLED": "false",
     "DEDUPLICATION_CACHE_SIZE": "200",
@@ -76,6 +80,8 @@ class ForwarderConfig:
     channel_identifiers: List[str]
     channel_sources: List[Dict[str, Any]]
     keyword_blacklist: List[str]
+    text_replacement_terms: List[str]
+    text_replacement_regex: str
     user_id_blacklist: Set[int]
     deduplication_enabled: bool
     deduplication_cache_size: int
@@ -273,6 +279,8 @@ class ConfigStore:
             channel_identifiers=parse_csv(raw.get("CHANNEL_IDENTIFIERS", "")),
             channel_sources=channel_sources,
             keyword_blacklist=[item.lower() for item in parse_csv(raw.get("KEYWORD_BLACKLIST", ""))],
+            text_replacement_terms=parse_csv(raw.get("TEXT_REPLACEMENT_TERMS", "")),
+            text_replacement_regex=raw.get("TEXT_REPLACEMENT_REGEX", "").strip(),
             user_id_blacklist=user_id_blacklist,
             deduplication_enabled=parse_bool(raw.get("DEDUPLICATION_ENABLED", "false"), False),
             deduplication_cache_size=parse_positive_int(

@@ -285,6 +285,49 @@ async def _send_message_with_retry(
 
     return False
 
+
+def _compile_text_replacement_regex(patterns_text: str, logger) -> List[re.Pattern[str]]:
+    compiled: List[re.Pattern[str]] = []
+    if not patterns_text:
+        return compiled
+
+    for raw_pattern in str(patterns_text).splitlines():
+        pattern = raw_pattern.strip()
+        if not pattern:
+            continue
+
+        try:
+            compiled.append(re.compile(pattern))
+        except re.error as exc:
+            logger.warning("择词正则无效，已忽略：%s（%s）", pattern, exc)
+
+    return compiled
+
+
+def _apply_text_replacements(
+    text: str,
+    replacement_terms: List[str],
+    replacement_regex_rules: List[re.Pattern[str]],
+) -> tuple[str, int, int]:
+    updated = str(text or "")
+    term_hits = 0
+    regex_hits = 0
+
+    for term in replacement_terms:
+        token = str(term or "")
+        if not token:
+            continue
+        hit_count = updated.count(token)
+        if hit_count > 0:
+            updated = updated.replace(token, "")
+            term_hits += hit_count
+
+    for pattern in replacement_regex_rules:
+        updated, hit_count = pattern.subn("", updated)
+        regex_hits += int(hit_count)
+
+    return updated, term_hits, regex_hits
+
 async def _resolve_identifier(client: TelegramClient, identifier: str, logger) -> Optional[int]:
     entity_to_get = identifier
     if identifier.startswith("+"):
@@ -403,6 +446,8 @@ async def _forward_single_message(
     logger,
     test_mode_enabled: bool,
     bot_link_cache: Dict[str, Optional[str]],
+    text_replacement_terms: List[str],
+    text_replacement_regex_rules: List[re.Pattern[str]],
     pre_resolved_url: Optional[str] = None,
 ) -> str:
     media_path = None
@@ -434,11 +479,28 @@ async def _forward_single_message(
         resolved_url = pre_resolved_url
         if not resolved_url:
             resolved_url = await _resolve_link_via_bot(client, message, logger, bot_link_cache)
-        if resolved_url and resolved_url not in outbound_text:
-            if outbound_text:
-                outbound_text = f"{outbound_text.rstrip()}\n\n{resolved_url}"
-            else:
-                outbound_text = resolved_url
+        if resolved_url and outbound_text and BOT_TRIGGER_PHRASE in outbound_text:
+            outbound_text = outbound_text.replace(BOT_TRIGGER_PHRASE, resolved_url)
+        elif resolved_url and outbound_text and BOT_TRIGGER_PHRASE not in outbound_text:
+            logger.info("消息 %s 获取到链接，但未命中替换词，保持原文发送。", getattr(message, "id", "unknown"))
+
+        if outbound_text:
+            outbound_text, term_hits, regex_hits = _apply_text_replacements(
+                outbound_text,
+                text_replacement_terms,
+                text_replacement_regex_rules,
+            )
+            if term_hits > 0 or regex_hits > 0:
+                logger.info(
+                    "🧽 择词替换：消息 %s 命中关键词 %s 次，命中正则 %s 次。",
+                    getattr(message, "id", "unknown"),
+                    term_hits,
+                    regex_hits,
+                )
+            outbound_text = outbound_text.strip()
+
+        if not outbound_text and not message.media:
+            return "skipped_no_content"
 
         if message.media:
             download_dir.mkdir(parents=True, exist_ok=True)
@@ -515,6 +577,7 @@ async def run_forwarder_once(
     channel_by_message_obj: Dict[int, int] = {}
     bot_link_cache: Dict[str, Optional[str]] = {}
     pre_resolved_url_by_message_obj: Dict[int, str] = {}
+    text_replacement_regex_rules: List[re.Pattern[str]] = []
 
     try:
         config = config_store.build_forwarder_config()
@@ -524,6 +587,13 @@ async def run_forwarder_once(
         stats["test_mode_enabled"] = test_mode_enabled
         stats["dedup_enabled"] = config.deduplication_enabled
         stats["dedup_cache_size"] = config.deduplication_cache_size
+        text_replacement_regex_rules = _compile_text_replacement_regex(config.text_replacement_regex, logger)
+
+        logger.info(
+            "🧹 文本清洗策略：择词 %s 条，正则 %s 条。",
+            len(config.text_replacement_terms),
+            len(text_replacement_regex_rules),
+        )
 
         logger.info("🚀 程序开始运行...")
         logger.info("🧭 开始执行转发任务，测试模式: %s", "开启" if test_mode_enabled else "关闭")
@@ -711,6 +781,8 @@ async def run_forwarder_once(
                     logger=logger,
                     test_mode_enabled=test_mode_enabled,
                     bot_link_cache=bot_link_cache,
+                    text_replacement_terms=config.text_replacement_terms,
+                    text_replacement_regex_rules=text_replacement_regex_rules,
                     pre_resolved_url=pre_resolved_url_by_message_obj.get(id(message)),
                 )
 

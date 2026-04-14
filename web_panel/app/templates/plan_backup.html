@@ -61,6 +61,14 @@
                 <button class="button-danger" type="submit">上传并恢复</button>
             </form>
         </article>
+
+        <article class="card">
+            <h3>清理垃圾与缓存</h3>
+            <p class="field-hint">清理下载缓存、临时恢复包、会话 sidecar 文件和无效锁文件。</p>
+            <form method="post" action="/plan-backup/cleanup">
+                <button class="button-danger" type="submit" onclick="return confirm('确认执行垃圾/缓存清理吗？');">执行清理</button>
+            </form>
+        </article>
     </div>
 
     <h3>现有备份文件</h3>

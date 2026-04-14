@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import secrets
+import shutil
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlencode
@@ -414,6 +415,7 @@ async def dashboard(request: Request):
     destination_display, destination_url = build_tme_link(raw_config.get("DESTINATION_CHANNEL", ""))
 
     keyword_blacklist = parse_csv(raw_config.get("KEYWORD_BLACKLIST", ""))
+    text_replacement_terms = parse_csv(raw_config.get("TEXT_REPLACEMENT_TERMS", ""))
     user_id_blacklist = parse_csv(raw_config.get("USER_ID_BLACKLIST", ""))
 
     try:
@@ -464,6 +466,7 @@ async def dashboard(request: Request):
                 "source_summary": f"{enabled_source_count}/{total_source_count}",
                 "keyword_blacklist_text": "，".join(keyword_blacklist),
                 "keyword_blacklist_count": len(keyword_blacklist),
+                "text_replacement_terms_count": len(text_replacement_terms),
                 "user_id_blacklist_text": "，".join(user_id_blacklist),
                 "user_id_blacklist_count": len(user_id_blacklist),
                 "deduplication_enabled": raw_config.get("DEDUPLICATION_ENABLED", "false"),
@@ -702,6 +705,8 @@ async def forward_settings_save(request: Request):
 
     keys = [
         "KEYWORD_BLACKLIST",
+        "TEXT_REPLACEMENT_TERMS",
+        "TEXT_REPLACEMENT_REGEX",
         "USER_ID_BLACKLIST",
         "DEDUPLICATION_ENABLED",
         "DEDUPLICATION_CACHE_SIZE",
@@ -951,6 +956,84 @@ async def plan_backup_save(request: Request):
     )
     config_store.save_raw_config(payload)
     return redirect_with_message("/plan-backup", "计划与调度配置已保存。", "success")
+
+
+@app.post("/plan-backup/cleanup")
+async def cleanup_runtime_files(request: Request):
+    auth_redirect = auth_redirect_if_needed(request)
+    if auth_redirect:
+        return auth_redirect
+
+    removed_files = 0
+    removed_dirs = 0
+    recovered_bytes = 0
+
+    def remove_file(path: Path) -> None:
+        nonlocal removed_files, recovered_bytes
+        if not path.exists() or not path.is_file():
+            return
+        try:
+            recovered_bytes += path.stat().st_size
+        except OSError:
+            pass
+        path.unlink(missing_ok=True)
+        removed_files += 1
+
+    def remove_tree(path: Path) -> None:
+        nonlocal removed_dirs, recovered_bytes
+        if not path.exists() or not path.is_dir():
+            return
+        try:
+            for item in path.rglob("*"):
+                if item.is_file():
+                    try:
+                        recovered_bytes += item.stat().st_size
+                    except OSError:
+                        pass
+            shutil.rmtree(path, ignore_errors=True)
+            removed_dirs += 1
+        except OSError:
+            shutil.rmtree(path, ignore_errors=True)
+
+    downloads_dir = config_store.download_dir
+    if downloads_dir.exists():
+        for entry in downloads_dir.iterdir():
+            if entry.is_dir():
+                remove_tree(entry)
+            else:
+                remove_file(entry)
+
+    if config_store.state_dir.exists():
+        for entry in config_store.state_dir.iterdir():
+            if entry.name == "downloads":
+                continue
+            if entry.name.startswith("tmp_") and entry.is_dir():
+                remove_tree(entry)
+
+    if not runner.is_running and config_store.lock_file.exists():
+        remove_file(config_store.lock_file)
+
+    session_sidecars = [
+        Path(f"{config_store.session_base_path}.session-journal"),
+        Path(f"{config_store.session_base_path}.session-shm"),
+        Path(f"{config_store.session_base_path}.session-wal"),
+        Path(f"{config_store.legacy_session_base_path}.session-journal"),
+        Path(f"{config_store.legacy_session_base_path}.session-shm"),
+        Path(f"{config_store.legacy_session_base_path}.session-wal"),
+    ]
+    for sidecar in session_sidecars:
+        if sidecar.exists():
+            remove_file(sidecar)
+
+    for tmp_backup in backup_manager.backups_dir.glob("uploaded_restore_*.zip"):
+        remove_file(tmp_backup)
+
+    recovered_mb = recovered_bytes / (1024 * 1024)
+    return redirect_with_message(
+        "/plan-backup",
+        f"清理完成：删除文件 {removed_files} 个，删除目录 {removed_dirs} 个，释放约 {recovered_mb:.2f} MB。",
+        "success",
+    )
 
 
 @app.post("/backups/create")

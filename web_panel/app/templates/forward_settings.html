@@ -102,6 +102,24 @@
                 </div>
 
                 <div class="field-block">
+                    <span class="field-label">择词（转发前替换为空）</span>
+                    <div class="chip-editor" data-name="TEXT_REPLACEMENT_TERMS" data-value="{{ config.get('TEXT_REPLACEMENT_TERMS', '') }}">
+                        <input type="hidden" name="TEXT_REPLACEMENT_TERMS" value="{{ config.get('TEXT_REPLACEMENT_TERMS', '') }}">
+                        <div class="chip-box">
+                            <div class="chip-list"></div>
+                            <input type="text" class="chip-input" placeholder="输入后按回车/逗号，可粘贴多项" autocomplete="off">
+                        </div>
+                    </div>
+                    <small class="field-hint">命中后会在发送前将文本替换为空，例如：<code>#动漫</code>、<code>#剧集</code>、<code>#电影</code>。</small>
+                </div>
+
+                <label>
+                    择词正则（可选）
+                    <textarea name="TEXT_REPLACEMENT_REGEX" rows="3" placeholder="填写一个正则表达式，命中后替换为空（预留高级清洗用）">{{ config.get('TEXT_REPLACEMENT_REGEX', '') }}</textarea>
+                    <small class="field-hint">示例：<code>#\S+</code>；非法正则会被自动忽略并写日志。</small>
+                </label>
+
+                <div class="field-block">
                     <span class="field-label">雷锋黑名单</span>
                     <div class="chip-editor" data-name="USER_ID_BLACKLIST" data-value="{{ config.get('USER_ID_BLACKLIST', '') }}">
                         <input type="hidden" name="USER_ID_BLACKLIST" value="{{ config.get('USER_ID_BLACKLIST', '') }}">

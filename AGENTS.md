@@ -149,7 +149,7 @@ When `DEDUPLICATION_ENABLED=true`:
   - Sends `/start` (with `start`/`startapp` payload if present) in a conversation
   - Extracts URL from bot reply text/buttons (prefers Quark URL)
   - Uses that resolved Quark link **before dedup filtering** (scenario-7 fix)
-  - Appends resolved URL to outbound message tail if not already present
+  - Replaces `点击获取夸克链接` in outbound text with resolved URL
   - Caches bot result by `bot + start payload` inside the run
 
 Important behavior notes:
