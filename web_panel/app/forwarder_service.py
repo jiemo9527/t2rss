@@ -247,16 +247,15 @@ def _extract_quark_trigger_bot_links(message) -> List[str]:
         length = int(getattr(entity, "length", 0) or 0)
         end = start + max(length, 0)
         entity_text = message_text[start:end] if length > 0 and start >= 0 and end <= len(message_text) else ""
-        context_start = max(0, start - 30)
-        context_end = min(len(message_text), end + 30)
-        context_text = message_text[context_start:context_end]
-        if BOT_TRIGGER_PHRASE not in entity_text and BOT_TRIGGER_PHRASE not in context_text:
-            continue
 
         entity_url = _clean_url_token(str(getattr(entity, "url", "") or ""))
         lower_url = entity_url.lower()
         if "t.me/" not in lower_url and not lower_url.startswith("tg://"):
             continue
+
+        if BOT_TRIGGER_PHRASE not in entity_text and not _is_quark_jump_link(entity_url):
+            continue
+
         if not entity_url or entity_url in seen:
             continue
         seen.add(entity_url)
@@ -324,10 +323,12 @@ def _materialize_text_url_entities(
         try:
             pair_candidates: List[tuple[str, str]] = []
             raw_pairs = get_entities_text(MessageEntityTextUrl)
-            if not isinstance(raw_pairs, (list, tuple)):
-                raw_pairs = []
+            try:
+                raw_pairs_iter = iter(raw_pairs)
+            except TypeError:
+                raw_pairs_iter = iter(())
 
-            for pair in raw_pairs:
+            for pair in raw_pairs_iter:
                 if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                     continue
                 entity, entity_text = pair
