@@ -304,12 +304,56 @@ def _materialize_text_url_entities(
     text: str,
     entities,
     skip_urls: Optional[Set[str]] = None,
+    message=None,
 ) -> str:
     content = str(text or "")
     if not content or not entities:
         return content
 
     skip_link_set = {_clean_url_token(item) for item in (skip_urls or set()) if str(item).strip()}
+
+    get_entities_text = getattr(message, "get_entities_text", None)
+    if callable(get_entities_text):
+        try:
+            pair_candidates: List[tuple[str, str]] = []
+            raw_pairs = get_entities_text(MessageEntityTextUrl)
+            if not isinstance(raw_pairs, (list, tuple)):
+                raw_pairs = []
+
+            for pair in raw_pairs:
+                if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    continue
+                entity, entity_text = pair
+                entity_url = _clean_url_token(str(getattr(entity, "url", "") or ""))
+                anchor_text = str(entity_text or "").strip()
+                if not entity_url or entity_url in skip_link_set:
+                    continue
+                if BOT_TRIGGER_PHRASE in anchor_text:
+                    continue
+                pair_candidates.append((anchor_text, entity_url))
+
+            if pair_candidates:
+                append_later: List[str] = []
+                for anchor_text, entity_url in pair_candidates:
+                    if entity_url in content:
+                        continue
+
+                    replacement = f"{anchor_text} ({entity_url})" if anchor_text else entity_url
+                    if anchor_text and anchor_text in content:
+                        content = content.replace(anchor_text, replacement, 1)
+                    else:
+                        append_later.append(replacement)
+
+                for item in append_later:
+                    normalized_item = str(item or "").strip()
+                    if not normalized_item or normalized_item in content:
+                        continue
+                    content = f"{content}\n{normalized_item}" if content else normalized_item
+
+                return content
+        except Exception:
+            pass
+
     candidates: List[tuple[int, int, str]] = []
 
     for entity in entities:
@@ -706,7 +750,7 @@ async def _forward_single_message(
 
         if text_changed and original_entities:
             skip_links = set(_extract_quark_trigger_bot_links(message))
-            outbound_with_links = _materialize_text_url_entities(original_text, original_entities, skip_links)
+            outbound_with_links = _materialize_text_url_entities(original_text, original_entities, skip_links, message)
 
             if resolved_url and _has_quark_trigger_phrase(outbound_with_links):
                 outbound_with_links = _replace_quark_trigger_segment(outbound_with_links, resolved_url)
