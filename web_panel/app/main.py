@@ -288,6 +288,37 @@ def build_forward_settings_context(
     }
 
 
+def build_checkpoint_rows(raw_config: Dict[str, str]) -> list[Dict[str, Any]]:
+    try:
+        fallback_channel_ids = sorted(set(parse_int_csv(raw_config.get("CHANNEL_IDS", ""), "CHANNEL_IDS")))
+    except ValueError:
+        fallback_channel_ids = []
+
+    source_items = parse_channel_sources(raw_config.get("CHANNEL_SOURCES_JSON", "[]"))
+    resolved_cids_all = {int(item["cid"]) for item in source_items if isinstance(item.get("cid"), int)}
+    resolved_cids_enabled = {
+        int(item["cid"])
+        for item in source_items
+        if isinstance(item.get("cid"), int) and bool(item.get("enabled", True))
+    }
+
+    if not source_items:
+        resolved_cids_enabled = set(fallback_channel_ids)
+        resolved_cids_all = set(fallback_channel_ids)
+
+    last_ids = checkpoint_store.list_last_ids()
+    for row in last_ids:
+        cid = int(row.get("channel_id", 0))
+        if cid in resolved_cids_enabled:
+            row["status_text"] = "开启"
+        elif cid in resolved_cids_all:
+            row["status_text"] = "停用"
+        else:
+            row["status_text"] = "停用"
+
+    return last_ids
+
+
 def extract_client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
@@ -442,15 +473,7 @@ async def dashboard(request: Request):
         resolved_cids_enabled = set(fallback_channel_ids)
         resolved_cids_all = set(fallback_channel_ids)
 
-    last_ids = checkpoint_store.list_last_ids()
-    for row in last_ids:
-        cid = int(row.get("channel_id", 0))
-        if cid in resolved_cids_enabled:
-            row["status_text"] = "开启"
-        elif cid in resolved_cids_all:
-            row["status_text"] = "停用"
-        else:
-            row["status_text"] = "停用"
+    last_ids = build_checkpoint_rows(raw_config)
 
     context = common_context(request, "仪表盘")
     context.update(
@@ -1276,6 +1299,16 @@ async def api_status(request: Request):
         return auth_redirect
 
     return JSONResponse(runner.status_payload())
+
+
+@app.get("/api/checkpoints")
+async def api_checkpoints(request: Request):
+    if request.session.get("authenticated") is not True:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    raw_config = config_store.load_raw_config()
+    rows = build_checkpoint_rows(raw_config)
+    return JSONResponse({"items": rows, "updated_at": now_shanghai_iso()})
 
 
 @app.get("/api/logs/tail")

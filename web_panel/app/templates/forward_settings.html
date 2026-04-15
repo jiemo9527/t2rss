@@ -11,10 +11,6 @@
                 <h3>① 来源频道列表</h3>
                 <textarea name="sources_input" rows="18" placeholder="每行一个来源，支持 t.me 邀请链接/用户名链接">{{ sources_input }}</textarea>
                 <small class="field-hint">支持混合格式示例：<code>https://t.me/+xxxxx</code>、<code>https://t.me/abc</code>。</small>
-                <div class="source-map-panel">
-                    <div class="source-map-title">来源与 CID 对应预览</div>
-                    <div id="source-map-list" class="source-map-list"></div>
-                </div>
                 <div class="flow-step-actions">
                     <button type="submit" formaction="/forward-settings/resolve">解析来源 -> CID</button>
                 </div>
@@ -28,7 +24,6 @@
                 <table id="source-items-table">
                     <thead>
                     <tr>
-                        <th>对应</th>
                         <th>启用</th>
                         <th>来源频道</th>
                         <th>CID</th>
@@ -38,10 +33,7 @@
                     </thead>
                     <tbody>
                     {% for item in source_items %}
-                    <tr data-source="{{ item.source }}" data-map-index="{{ loop.index }}">
-                        <td>
-                            <span class="source-map-index">{{ loop.index }}</span>
-                        </td>
+                    <tr data-source="{{ item.source }}">
                         <td>
                             <input
                                 type="checkbox"
@@ -461,19 +453,6 @@
             });
     }
 
-    function uniqueSourceTokens(tokens) {
-        var seen = {};
-        var results = [];
-        tokens.forEach(function (token) {
-            if (seen[token]) {
-                return;
-            }
-            seen[token] = true;
-            results.push(token);
-        });
-        return results;
-    }
-
     function removeSourceFromTextarea(textarea, sourceToRemove) {
         if (!textarea) {
             return;
@@ -509,154 +488,8 @@
 
     var sourceTable = document.getElementById("source-items-table");
     var sourcesInput = document.querySelector('textarea[name="sources_input"]');
-    var sourceMapList = document.getElementById("source-map-list");
-
-    function listSourceRows() {
-        if (!sourceTable) {
-            return [];
-        }
-        return Array.prototype.slice.call(sourceTable.querySelectorAll("tbody tr[data-source]"));
-    }
-
-    function findRowBySource(sourceToken) {
-        var normalizedTarget = normalizeSourceToken(sourceToken);
-        if (!normalizedTarget) {
-            return null;
-        }
-
-        var rows = listSourceRows();
-        for (var i = 0; i < rows.length; i += 1) {
-            var rowSource = normalizeSourceToken(rows[i].getAttribute("data-source") || "");
-            if (rowSource === normalizedTarget) {
-                return rows[i];
-            }
-        }
-        return null;
-    }
-
-    function clearMapHighlight() {
-        listSourceRows().forEach(function (row) {
-            row.classList.remove("source-row-linked-active");
-        });
-        if (!sourceMapList) {
-            return;
-        }
-        Array.prototype.slice.call(sourceMapList.querySelectorAll(".source-map-item")).forEach(function (item) {
-            item.classList.remove("source-map-item-active");
-        });
-    }
-
-    function focusSourcePair(sourceToken, doScroll) {
-        clearMapHighlight();
-
-        var row = findRowBySource(sourceToken);
-        if (row) {
-            row.classList.add("source-row-linked-active");
-            if (doScroll) {
-                row.scrollIntoView({ behavior: "smooth", block: "center" });
-            }
-        }
-
-        if (!sourceMapList) {
-            return;
-        }
-        var items = Array.prototype.slice.call(sourceMapList.querySelectorAll(".source-map-item"));
-        items.forEach(function (item) {
-            if (normalizeSourceToken(item.getAttribute("data-source") || "") === normalizeSourceToken(sourceToken)) {
-                item.classList.add("source-map-item-active");
-            }
-        });
-    }
-
-    function renderSourceMapList() {
-        if (!sourceMapList || !sourcesInput) {
-            return;
-        }
-
-        sourceMapList.innerHTML = "";
-        var tokens = uniqueSourceTokens(parseSourcesInputText(sourcesInput.value));
-        if (tokens.length === 0) {
-            var empty = document.createElement("div");
-            empty.className = "source-map-empty";
-            empty.textContent = "暂无来源，先在上方输入来源频道。";
-            sourceMapList.appendChild(empty);
-            return;
-        }
-
-        var fragment = document.createDocumentFragment();
-        tokens.forEach(function (token, index) {
-            var row = findRowBySource(token);
-            var item = document.createElement("button");
-            item.type = "button";
-            item.className = "source-map-item";
-            item.setAttribute("data-source", token);
-
-            var rowIndex = index + 1;
-            if (row) {
-                var rowIndexRaw = Number(row.getAttribute("data-map-index") || "0");
-                if (Number.isFinite(rowIndexRaw) && rowIndexRaw > 0) {
-                    rowIndex = rowIndexRaw;
-                }
-                item.classList.add("source-map-item-linked");
-            } else {
-                item.classList.add("source-map-item-unlinked");
-            }
-
-            var indexBadge = document.createElement("span");
-            indexBadge.className = "source-map-index";
-            indexBadge.textContent = String(rowIndex);
-
-            var sourceText = document.createElement("span");
-            sourceText.className = "source-map-source";
-            sourceText.textContent = token;
-
-            var statusText = document.createElement("span");
-            statusText.className = "source-map-status";
-            if (!row) {
-                statusText.textContent = "待解析";
-            } else {
-                var hiddenCid = row.querySelector('input[name="row_cid"]');
-                statusText.textContent = hiddenCid && String(hiddenCid.value || "").trim() ? "已解析" : "解析失败";
-            }
-
-            item.appendChild(indexBadge);
-            item.appendChild(sourceText);
-            item.appendChild(statusText);
-
-            item.addEventListener("mouseenter", function () {
-                focusSourcePair(token, false);
-            });
-            item.addEventListener("click", function (event) {
-                event.preventDefault();
-                focusSourcePair(token, true);
-            });
-
-            fragment.appendChild(item);
-        });
-
-        sourceMapList.appendChild(fragment);
-    }
-
-    if (sourcesInput) {
-        sourcesInput.addEventListener("input", function () {
-            renderSourceMapList();
-        });
-    }
 
     if (sourceTable && sourcesInput) {
-        sourceTable.addEventListener("mouseenter", function (event) {
-            var target = event.target;
-            if (!(target instanceof Element)) {
-                return;
-            }
-
-            var row = target.closest("tr[data-source]");
-            if (!row) {
-                return;
-            }
-            focusSourcePair(String(row.getAttribute("data-source") || ""), false);
-        }, true);
-
         sourceTable.addEventListener("click", function (event) {
             var target = event.target;
             if (!(target instanceof Element)) {
@@ -677,11 +510,8 @@
                 row.remove();
             }
             removeSourceFromTextarea(sourcesInput, source);
-            renderSourceMapList();
         });
     }
-
-    renderSourceMapList();
 
     var toggleManualBtn = document.getElementById("toggle-manual-checkpoint");
     var manualForm = document.getElementById("manual-checkpoint-form");

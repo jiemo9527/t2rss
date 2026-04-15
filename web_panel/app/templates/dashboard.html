@@ -61,8 +61,7 @@
 
 <section class="card">
     <h2>断点进度</h2>
-    {% if last_ids %}
-    <table>
+    <table id="checkpoint-table" {% if not last_ids %}style="display:none;"{% endif %}>
         <thead>
         <tr>
             <th>频道 ID</th>
@@ -71,7 +70,7 @@
             <th>状态</th>
         </tr>
         </thead>
-        <tbody>
+        <tbody id="checkpoint-table-body">
         {% for item in last_ids %}
         <tr>
             <td>{{ item.channel_id }}</td>
@@ -82,9 +81,7 @@
         {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <p>暂无断点记录。</p>
-    {% endif %}
+    <p id="checkpoint-empty" {% if last_ids %}style="display:none;"{% endif %}>暂无断点记录。</p>
 </section>
 
 <script>
@@ -94,6 +91,9 @@
     var autoScroll = document.getElementById("log-autoscroll");
     var refreshBtn = document.getElementById("log-refresh-btn");
     var clearBtn = document.getElementById("log-clear-btn");
+    var checkpointTable = document.getElementById("checkpoint-table");
+    var checkpointBody = document.getElementById("checkpoint-table-body");
+    var checkpointEmpty = document.getElementById("checkpoint-empty");
     var lastContent = "";
     var redirectedToLogin = false;
 
@@ -117,6 +117,46 @@
         if (autoScroll && autoScroll.checked) {
             output.scrollTop = output.scrollHeight;
         }
+    }
+
+    function applyCheckpointRows(items) {
+        if (!checkpointTable || !checkpointBody || !checkpointEmpty) {
+            return;
+        }
+
+        var rows = Array.isArray(items) ? items : [];
+        checkpointBody.innerHTML = "";
+
+        if (rows.length === 0) {
+            checkpointTable.style.display = "none";
+            checkpointEmpty.style.display = "";
+            return;
+        }
+
+        checkpointTable.style.display = "";
+        checkpointEmpty.style.display = "none";
+
+        rows.forEach(function (item) {
+            var tr = document.createElement("tr");
+
+            var channelTd = document.createElement("td");
+            channelTd.textContent = String(item.channel_id || "-");
+
+            var lastIdTd = document.createElement("td");
+            lastIdTd.textContent = String(item.last_id || 0);
+
+            var updatedTd = document.createElement("td");
+            updatedTd.textContent = String(item.updated_at || "-");
+
+            var statusTd = document.createElement("td");
+            statusTd.textContent = String(item.status_text || "-");
+
+            tr.appendChild(channelTd);
+            tr.appendChild(lastIdTd);
+            tr.appendChild(updatedTd);
+            tr.appendChild(statusTd);
+            checkpointBody.appendChild(tr);
+        });
     }
 
     async function fetchLogs() {
@@ -177,6 +217,30 @@
         }
     }
 
+    async function fetchCheckpoints() {
+        try {
+            var response = await fetch("/api/checkpoints", {
+                cache: "no-store",
+                credentials: "same-origin"
+            });
+
+            if (response.status === 401) {
+                status.textContent = "登录状态已失效，正在跳转登录页...";
+                redirectToLogin();
+                return;
+            }
+
+            if (!response.ok) {
+                return;
+            }
+
+            var payload = await response.json();
+            applyCheckpointRows(payload.items || []);
+        } catch (error) {
+            // checkpoint refresh failure should not break log refresh UI
+        }
+    }
+
     if (refreshBtn) {
         refreshBtn.addEventListener("click", function () {
             fetchLogs();
@@ -190,7 +254,9 @@
     }
 
     fetchLogs();
+    fetchCheckpoints();
     setInterval(fetchLogs, 2000);
+    setInterval(fetchCheckpoints, 4000);
 })();
 </script>
 {% endblock %}
