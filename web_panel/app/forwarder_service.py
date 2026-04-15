@@ -300,6 +300,51 @@ def _replace_quark_trigger_segment(text: str, resolved_url: str) -> str:
     return content
 
 
+def _materialize_text_url_entities(
+    text: str,
+    entities,
+    skip_urls: Optional[Set[str]] = None,
+) -> str:
+    content = str(text or "")
+    if not content or not entities:
+        return content
+
+    skip_link_set = {_clean_url_token(item) for item in (skip_urls or set()) if str(item).strip()}
+    candidates: List[tuple[int, int, str]] = []
+
+    for entity in entities:
+        if not isinstance(entity, MessageEntityTextUrl):
+            continue
+
+        entity_url = _clean_url_token(str(getattr(entity, "url", "") or ""))
+        if not entity_url or entity_url in skip_link_set:
+            continue
+
+        start = int(getattr(entity, "offset", 0) or 0)
+        length = int(getattr(entity, "length", 0) or 0)
+        end = start + length
+        if length <= 0 or start < 0 or end > len(content):
+            continue
+
+        candidates.append((start, length, entity_url))
+
+    if not candidates:
+        return content
+
+    for start, length, entity_url in sorted(candidates, key=lambda item: item[0], reverse=True):
+        anchor_text = content[start : start + length]
+        if BOT_TRIGGER_PHRASE in anchor_text:
+            continue
+
+        if entity_url in anchor_text:
+            replacement = anchor_text
+        else:
+            replacement = f"{anchor_text} ({entity_url})"
+        content = content[:start] + replacement + content[start + length :]
+
+    return content
+
+
 def _extract_url_from_bot_message(message) -> Optional[str]:
     message_text = getattr(message, "text", None) or getattr(message, "caption", None) or getattr(message, "raw_text", None)
     quark_link = extract_quark_link(message_text)
@@ -616,7 +661,6 @@ async def _forward_single_message(
         outbound_text = message_text or ""
         full_text = (message_text or "").lower()
         original_entities = getattr(message, "entities", None)
-        text_changed = False
 
         if keyword_blacklist and full_text:
             if any(keyword in full_text for keyword in keyword_blacklist):
@@ -638,10 +682,7 @@ async def _forward_single_message(
         if not resolved_url:
             resolved_url = await _resolve_link_via_bot(client, message, logger, bot_link_cache)
         if resolved_url and _has_quark_trigger_phrase(outbound_text):
-            replaced_text = _replace_quark_trigger_segment(outbound_text, resolved_url)
-            if replaced_text != outbound_text:
-                text_changed = True
-            outbound_text = replaced_text
+            outbound_text = _replace_quark_trigger_segment(outbound_text, resolved_url)
         elif resolved_url:
             logger.info("消息 %s 获取到夸克链接，但正文无触发词，保持原文发送。", getattr(message, "id", "unknown"))
 
@@ -651,8 +692,6 @@ async def _forward_single_message(
                 text_replacement_terms,
                 text_replacement_regex_rules,
             )
-            if replaced_text != outbound_text:
-                text_changed = True
             outbound_text = replaced_text
             if term_hits > 0 or regex_hits > 0:
                 logger.info(
@@ -662,6 +701,22 @@ async def _forward_single_message(
                     regex_hits,
                 )
             outbound_text = outbound_text.strip()
+
+        text_changed = outbound_text != original_text
+
+        if text_changed and original_entities:
+            skip_links = set(_extract_quark_trigger_bot_links(message))
+            outbound_with_links = _materialize_text_url_entities(original_text, original_entities, skip_links)
+
+            if resolved_url and _has_quark_trigger_phrase(outbound_with_links):
+                outbound_with_links = _replace_quark_trigger_segment(outbound_with_links, resolved_url)
+
+            outbound_with_links, _, _ = _apply_text_replacements(
+                outbound_with_links,
+                text_replacement_terms,
+                text_replacement_regex_rules,
+            )
+            outbound_text = outbound_with_links.strip()
 
         if not outbound_text and not message.media:
             return "skipped_no_content"
