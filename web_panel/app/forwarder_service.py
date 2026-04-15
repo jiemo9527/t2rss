@@ -30,6 +30,9 @@ QUARK_TRIGGER_LINK_PAREN_PATTERN = re.compile(
 QUARK_TRIGGER_LINK_INLINE_PATTERN = re.compile(
     rf"{re.escape(BOT_TRIGGER_PHRASE)}\s*(?P<url>(?:https?://t\.me/\S+|tg://resolve\S+))"
 )
+QUARK_TRIGGER_MARKDOWN_PATTERN = re.compile(
+    rf"\[[^\]]*{re.escape(BOT_TRIGGER_PHRASE)}[^\]]*\]\((?P<url>(?:https?://t\.me/[^\s)]+|tg://resolve[^\s)]+))\)"
+)
 TME_JUMP_LINK_PATTERN = re.compile(r"(?:https?://t\.me/\S+|tg://resolve\S+)")
 
 
@@ -221,7 +224,13 @@ def _extract_quark_trigger_bot_links_from_text(text: Optional[str]) -> List[str]
 def _extract_quark_trigger_bot_links(message) -> List[str]:
     links: List[str] = []
     seen: Set[str] = set()
-    message_text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+    message_text = (
+        getattr(message, "raw_text", None)
+        or getattr(message, "message", None)
+        or getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    )
 
     for url in _extract_quark_trigger_bot_links_from_text(message_text):
         if url in seen:
@@ -281,9 +290,12 @@ def _replace_quark_trigger_segment(text: str, resolved_url: str) -> str:
     if not replacement:
         return content
 
-    content, count_paren = QUARK_TRIGGER_LINK_PAREN_PATTERN.subn(replacement, content)
-    content, count_inline = QUARK_TRIGGER_LINK_INLINE_PATTERN.subn(replacement, content)
-    if count_paren == 0 and count_inline == 0 and BOT_TRIGGER_PHRASE in content:
+    content = QUARK_TRIGGER_MARKDOWN_PATTERN.sub(replacement, content)
+
+    content = QUARK_TRIGGER_LINK_PAREN_PATTERN.sub(f"{replacement} ({replacement})", content)
+    content = QUARK_TRIGGER_LINK_INLINE_PATTERN.sub(f"{replacement} {replacement}", content)
+
+    if BOT_TRIGGER_PHRASE in content:
         content = content.replace(BOT_TRIGGER_PHRASE, replacement)
     return content
 
@@ -317,7 +329,13 @@ async def _resolve_link_via_bot(
     logger,
     bot_link_cache: Dict[str, Optional[str]],
 ) -> Optional[str]:
-    message_text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+    message_text = (
+        getattr(message, "raw_text", None)
+        or getattr(message, "message", None)
+        or getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    )
     if not _has_quark_trigger_phrase(message_text):
         return None
 
@@ -370,7 +388,7 @@ async def _send_message_with_retry(
 ) -> bool:
     for attempt in range(1, SEND_RETRY_MAX_ATTEMPTS + 1):
         try:
-            await client.send_message(destination_channel, outbound_text or None, file=media_path)
+            await client.send_message(destination_channel, outbound_text or None, file=media_path, parse_mode=None)
             if attempt > 1:
                 logger.info("消息 %s 重试后发送成功（第 %s 次）。", message_id, attempt)
             return True
@@ -581,10 +599,14 @@ async def _forward_single_message(
         if isinstance(message, MessageService):
             return "skipped_service"
 
-        message_text = getattr(message, "text", None)
-        message_caption = getattr(message, "caption", None)
-        outbound_text = message_text or message_caption or ""
-        full_text = (message_text or message_caption or "").lower()
+        message_text = (
+            getattr(message, "raw_text", None)
+            or getattr(message, "message", None)
+            or getattr(message, "text", None)
+            or getattr(message, "caption", None)
+        )
+        outbound_text = message_text or ""
+        full_text = (message_text or "").lower()
 
         if keyword_blacklist and full_text:
             if any(keyword in full_text for keyword in keyword_blacklist):
