@@ -383,12 +383,19 @@ async def _send_message_with_retry(
     destination_channel: str,
     outbound_text: Optional[str],
     media_path: Optional[str],
+    formatting_entities,
     logger,
     message_id: Any,
 ) -> bool:
     for attempt in range(1, SEND_RETRY_MAX_ATTEMPTS + 1):
         try:
-            await client.send_message(destination_channel, outbound_text or None, file=media_path, parse_mode=None)
+            await client.send_message(
+                destination_channel,
+                outbound_text or None,
+                file=media_path,
+                parse_mode=None,
+                formatting_entities=formatting_entities,
+            )
             if attempt > 1:
                 logger.info("消息 %s 重试后发送成功（第 %s 次）。", message_id, attempt)
             return True
@@ -605,8 +612,11 @@ async def _forward_single_message(
             or getattr(message, "text", None)
             or getattr(message, "caption", None)
         )
+        original_text = message_text or ""
         outbound_text = message_text or ""
         full_text = (message_text or "").lower()
+        original_entities = getattr(message, "entities", None)
+        text_changed = False
 
         if keyword_blacklist and full_text:
             if any(keyword in full_text for keyword in keyword_blacklist):
@@ -628,16 +638,22 @@ async def _forward_single_message(
         if not resolved_url:
             resolved_url = await _resolve_link_via_bot(client, message, logger, bot_link_cache)
         if resolved_url and _has_quark_trigger_phrase(outbound_text):
-            outbound_text = _replace_quark_trigger_segment(outbound_text, resolved_url)
+            replaced_text = _replace_quark_trigger_segment(outbound_text, resolved_url)
+            if replaced_text != outbound_text:
+                text_changed = True
+            outbound_text = replaced_text
         elif resolved_url:
             logger.info("消息 %s 获取到夸克链接，但正文无触发词，保持原文发送。", getattr(message, "id", "unknown"))
 
         if outbound_text:
-            outbound_text, term_hits, regex_hits = _apply_text_replacements(
+            replaced_text, term_hits, regex_hits = _apply_text_replacements(
                 outbound_text,
                 text_replacement_terms,
                 text_replacement_regex_rules,
             )
+            if replaced_text != outbound_text:
+                text_changed = True
+            outbound_text = replaced_text
             if term_hits > 0 or regex_hits > 0:
                 logger.info(
                     "🧽 择词替换：消息 %s 命中关键词 %s 次，命中正则 %s 次。",
@@ -655,11 +671,15 @@ async def _forward_single_message(
             media_path = await message.download_media(file=str(download_dir))
 
         message_id = getattr(message, "id", "unknown")
+        entities_for_send = None
+        if not text_changed and outbound_text == original_text and original_entities:
+            entities_for_send = list(original_entities)
         send_ok = await _send_message_with_retry(
             client=client,
             destination_channel=destination_channel,
             outbound_text=outbound_text,
             media_path=media_path,
+            formatting_entities=entities_for_send,
             logger=logger,
             message_id=message_id,
         )
