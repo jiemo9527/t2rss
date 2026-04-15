@@ -68,6 +68,10 @@ DEFAULT_ENV_VALUES = {
     "PANEL_LOGIN_LOCK_SECONDS": "900",
 }
 
+MULTILINE_ESCAPED_ENV_KEYS = {
+    "TEXT_REPLACEMENT_REGEX",
+}
+
 
 @dataclass
 class ForwarderConfig:
@@ -241,6 +245,11 @@ class ConfigStore:
         for key, default_value in DEFAULT_ENV_VALUES.items():
             values.setdefault(key, default_value)
 
+        for key in MULTILINE_ESCAPED_ENV_KEYS:
+            if key in values:
+                raw_value = str(values.get(key, "") or "")
+                values[key] = raw_value.replace("\\r\\n", "\\n").replace("\\n", "\n")
+
         return values
 
     def save_raw_config(self, updated_config: Dict[str, str]) -> None:
@@ -249,7 +258,15 @@ class ConfigStore:
 
         merged = dict(current)
         for key, value in updated_config.items():
-            merged[key] = "" if value is None else str(value).replace("\n", " ").strip()
+            if value is None:
+                merged[key] = ""
+                continue
+
+            text_value = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+            if key in MULTILINE_ESCAPED_ENV_KEYS:
+                merged[key] = text_value.replace("\n", "\\n")
+            else:
+                merged[key] = text_value.replace("\n", " ")
 
         ordered_keys = list(ALL_ENV_KEYS)
         extra_keys = sorted([key for key in merged.keys() if key not in ALL_ENV_KEYS])

@@ -123,8 +123,8 @@
 
                 <label>
                     择词正则（可选）
-                    <textarea name="TEXT_REPLACEMENT_REGEX" rows="3" placeholder="填写一个正则表达式，命中后替换为空（预留高级清洗用）">{{ config.get('TEXT_REPLACEMENT_REGEX', '') }}</textarea>
-                    <small class="field-hint">示例：<code>#\S+</code>；非法正则会被自动忽略并写日志。</small>
+                    <textarea name="TEXT_REPLACEMENT_REGEX" rows="4" placeholder="每行一个正则表达式，命中后替换为空（预留高级清洗用）">{{ config.get('TEXT_REPLACEMENT_REGEX', '') }}</textarea>
+                    <small class="field-hint">一行一条规则。示例：<code>#\S+</code>。非法正则会被自动忽略并写日志。</small>
                 </label>
 
                 <div class="field-block">
