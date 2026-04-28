@@ -27,6 +27,7 @@ from .history_store import RunHistoryStore
 from .logging_utils import create_logger, rebind_logger_file_handler
 from .time_utils import now_shanghai_iso, timestamp_to_shanghai_iso
 from telethon import TelegramClient
+from telethon.tl.types import MessageEntityTextUrl, MessageEntityUrl
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -289,16 +290,10 @@ def rss_pub_date(message) -> str:
     return format_datetime(date_value)
 
 
-def rss_description_cdata(text: str, image_url: str = "") -> str:
-    raw = str(text or "（媒体消息）")
+def rss_linkify_plain_text(raw: str) -> str:
     pieces: list[str] = []
     position = 0
-
-    if image_url:
-        escaped_image_url = html.escape(image_url, quote=True)
-        pieces.append(f'<p><img src="{escaped_image_url}" alt="" /></p>')
-
-    for match in RSS_HTTP_URL_RE.finditer(raw):
+    for match in RSS_HTTP_URL_RE.finditer(str(raw or "")):
         url = match.group(0)
         while url and url[-1] in RSS_URL_TRAILING_CHARS:
             url = url[:-1]
@@ -313,6 +308,62 @@ def rss_description_cdata(text: str, image_url: str = "") -> str:
         position = match.end()
 
     pieces.append(html.escape(raw[position:], quote=False))
+    return "".join(pieces)
+
+
+def rss_link_entities_from_message(message, text: str) -> list[tuple[int, int, str]]:
+    content = str(text or "")
+    if not content:
+        return []
+
+    candidates: list[tuple[int, int, str]] = []
+    for entity in getattr(message, "entities", None) or []:
+        start = int(getattr(entity, "offset", 0) or 0)
+        length = int(getattr(entity, "length", 0) or 0)
+        end = start + length
+        if length <= 0 or start < 0 or end > len(content):
+            continue
+
+        if isinstance(entity, MessageEntityTextUrl):
+            href = str(getattr(entity, "url", "") or "").strip()
+        elif isinstance(entity, MessageEntityUrl):
+            href = content[start:end].strip()
+        else:
+            continue
+
+        if not href:
+            continue
+        candidates.append((start, end, href))
+
+    results: list[tuple[int, int, str]] = []
+    cursor = 0
+    for start, end, href in sorted(candidates, key=lambda item: (item[0], item[1])):
+        if start < cursor:
+            continue
+        results.append((start, end, href))
+        cursor = end
+    return results
+
+
+def rss_description_cdata(text: str, image_url: str = "", link_entities: list[tuple[int, int, str]] | None = None) -> str:
+    raw = str(text or "（媒体消息）")
+    pieces: list[str] = []
+
+    if image_url:
+        escaped_image_url = html.escape(image_url, quote=True)
+        pieces.append(f'<p><img src="{escaped_image_url}" alt="" /></p>')
+
+    position = 0
+    for start, end, href in link_entities or []:
+        if start < position or end > len(raw):
+            continue
+        pieces.append(rss_linkify_plain_text(raw[position:start]))
+        anchor_text = raw[start:end]
+        escaped_href = html.escape(href, quote=True)
+        pieces.append(f'<a href="{escaped_href}">{html.escape(anchor_text, quote=False)}</a>')
+        position = end
+
+    pieces.append(rss_linkify_plain_text(raw[position:]))
     html_body = "".join(pieces).replace("\n", "<br />")
     return f"<![CDATA[{html_body.replace(']]>', ']]]]><![CDATA[>')}]]>"
 
@@ -559,7 +610,12 @@ async def build_live_rss_xml(request: Request, token: str, raw_config: Dict[str,
                 if image_info:
                     active_image_filenames.add(str(image_info["filename"]))
 
-                description = rss_description_cdata(text, str(image_info["url"]) if image_info else "")
+                link_entities = rss_link_entities_from_message(message, text)
+                description = rss_description_cdata(
+                    text,
+                    str(image_info["url"]) if image_info else "",
+                    link_entities,
+                )
                 guid = link or f"t2rss:{destination_channel}:{message_id}"
                 pub_date = rss_pub_date(message)
 
