@@ -75,9 +75,24 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 RSS_REFRESH_TIMEOUT_SECONDS = 20
-RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 120
+RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 300
 RSS_HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 RSS_URL_TRAILING_CHARS = ".,;:!?)]}，。！？、；：）】》"
+RSS_MEDIA_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+RSS_IMAGE_EXT_BY_MIME = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+RSS_IMAGE_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 rss_refresh_task: asyncio.Task | None = None
 
 
@@ -274,10 +289,14 @@ def rss_pub_date(message) -> str:
     return format_datetime(date_value)
 
 
-def rss_description_cdata(text: str) -> str:
+def rss_description_cdata(text: str, image_url: str = "") -> str:
     raw = str(text or "（媒体消息）")
     pieces: list[str] = []
     position = 0
+
+    if image_url:
+        escaped_image_url = html.escape(image_url, quote=True)
+        pieces.append(f'<p><img src="{escaped_image_url}" alt="" /></p>')
 
     for match in RSS_HTTP_URL_RE.finditer(raw):
         url = match.group(0)
@@ -304,6 +323,119 @@ class RssRefreshUnavailable(Exception):
 
 def rss_cache_file() -> Path:
     return config_store.state_dir / "rss_feed.xml"
+
+
+def rss_media_dir() -> Path:
+    return config_store.state_dir / "rss_media"
+
+
+def rss_media_type_for_path(path: Path) -> str:
+    return RSS_IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def build_rss_media_url(request: Request, token: str, filename: str) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/rss-media/{token}/{filename}"
+
+
+def rss_media_payload(path: Path, request: Request, token: str) -> Dict[str, Any]:
+    return {
+        "filename": path.name,
+        "url": build_rss_media_url(request, token, path.name),
+        "length": path.stat().st_size,
+        "mime_type": rss_media_type_for_path(path),
+    }
+
+
+def rss_message_image_metadata(message) -> tuple[str, str] | None:
+    if getattr(message, "photo", None):
+        return ".jpg", "image/jpeg"
+
+    file_info = getattr(message, "file", None)
+    mime_type = str(getattr(file_info, "mime_type", "") or "").lower()
+    if mime_type.startswith("image/"):
+        ext = str(getattr(file_info, "ext", "") or "").lower()
+        if ext == ".jpe":
+            ext = ".jpg"
+        if ext not in RSS_IMAGE_MEDIA_TYPES:
+            ext = RSS_IMAGE_EXT_BY_MIME.get(mime_type, ".jpg")
+        return ext, RSS_IMAGE_MEDIA_TYPES.get(ext, mime_type)
+
+    media = getattr(message, "media", None)
+    if getattr(media, "photo", None):
+        return ".jpg", "image/jpeg"
+
+    webpage = getattr(media, "webpage", None)
+    if getattr(webpage, "photo", None):
+        return ".jpg", "image/jpeg"
+
+    return None
+
+
+def rss_media_prefix(destination_channel: str, message_id: int) -> str:
+    channel_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", str(destination_channel or "channel")).strip("_")
+    channel_slug = channel_slug[:80] or "channel"
+    return f"{channel_slug}_{message_id}"
+
+
+async def cache_rss_message_image(
+    client: TelegramClient,
+    message,
+    request: Request,
+    token: str,
+    destination_channel: str,
+) -> Dict[str, Any] | None:
+    metadata = rss_message_image_metadata(message)
+    if not metadata:
+        return None
+
+    message_id = int(getattr(message, "id", 0) or 0)
+    if message_id <= 0:
+        return None
+
+    ext, mime_type = metadata
+    media_dir = rss_media_dir()
+    media_dir.mkdir(parents=True, exist_ok=True)
+    prefix = rss_media_prefix(destination_channel, message_id)
+
+    for existing in media_dir.glob(f"{prefix}.*"):
+        if existing.is_file() and existing.suffix.lower() in RSS_IMAGE_MEDIA_TYPES:
+            return rss_media_payload(existing, request, token)
+
+    target_path = media_dir / f"{prefix}{ext}"
+    temporary_path = media_dir / f"{prefix}.{secrets.token_hex(8)}.tmp"
+    try:
+        payload = await client.download_media(message, file=bytes)
+        if not payload:
+            return None
+        temporary_path.write_bytes(payload)
+        temporary_path.replace(target_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+    return {
+        "filename": target_path.name,
+        "url": build_rss_media_url(request, token, target_path.name),
+        "length": target_path.stat().st_size,
+        "mime_type": mime_type,
+    }
+
+
+def cleanup_stale_rss_media(active_filenames: set[str]) -> None:
+    media_dir = rss_media_dir()
+    if not media_dir.exists():
+        return
+    for item in media_dir.iterdir():
+        if not item.is_file():
+            continue
+        if item.name in active_filenames:
+            continue
+        if item.suffix.lower() not in RSS_IMAGE_MEDIA_TYPES and item.suffix.lower() != ".tmp":
+            continue
+        try:
+            item.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def read_rss_cache() -> str | None:
@@ -403,6 +535,8 @@ async def build_live_rss_xml(request: Request, token: str, raw_config: Dict[str,
     _, destination_url = build_tme_link(destination_channel)
     feed_link = destination_url or str(request.base_url).rstrip("/")
     items_xml: list[str] = []
+    active_image_filenames: set[str] = set()
+    image_download_failed = False
 
     session_copy_base = create_rss_session_copy()
     try:
@@ -415,25 +549,48 @@ async def build_live_rss_xml(request: Request, token: str, raw_config: Dict[str,
                 text = message_text_for_feed(message)
                 title = rss_title_from_text(text, f"Telegram 消息 {message_id}")
                 link = build_message_link(destination_channel, message_id) or feed_link
-                description = rss_description_cdata(text)
+                image_info = None
+                try:
+                    image_info = await cache_rss_message_image(client, message, request, token, destination_channel)
+                except Exception as exc:
+                    image_download_failed = True
+                    logger.warning("RSS 图片缓存失败，消息 %s：%s", message_id, exc)
+
+                if image_info:
+                    active_image_filenames.add(str(image_info["filename"]))
+
+                description = rss_description_cdata(text, str(image_info["url"]) if image_info else "")
                 guid = link or f"t2rss:{destination_channel}:{message_id}"
                 pub_date = rss_pub_date(message)
 
-                items_xml.append(
-                    "\n".join(
-                        [
-                            "    <item>",
-                            f"      <title>{xml_escape(title)}</title>",
-                            f"      <link>{xml_escape(link)}</link>",
-                            f"      <guid isPermaLink=\"false\">{xml_escape(guid)}</guid>",
-                            f"      <pubDate>{xml_escape(pub_date)}</pubDate>",
-                            f"      <description>{description}</description>",
-                            "    </item>",
-                        ]
+                item_lines = [
+                    "    <item>",
+                    f"      <title>{xml_escape(title)}</title>",
+                    f"      <link>{xml_escape(link)}</link>",
+                    f"      <guid isPermaLink=\"false\">{xml_escape(guid)}</guid>",
+                    f"      <pubDate>{xml_escape(pub_date)}</pubDate>",
+                ]
+                if image_info:
+                    item_lines.append(
+                        (
+                            f"      <enclosure url=\"{xml_escape(str(image_info['url']))}\" "
+                            f"length=\"{int(image_info['length'])}\" "
+                            f"type=\"{xml_escape(str(image_info['mime_type']))}\" />"
+                        )
                     )
+                item_lines.extend(
+                    [
+                        f"      <description>{description}</description>",
+                        "    </item>",
+                    ]
                 )
+
+                items_xml.append("\n".join(item_lines))
     finally:
         cleanup_rss_session_copy(session_copy_base)
+
+    if not image_download_failed:
+        cleanup_stale_rss_media(active_image_filenames)
 
     return build_rss_xml(request, token, raw_config, items_xml)
 
@@ -694,6 +851,23 @@ def hmac_compare(left: str, right: str) -> bool:
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse({"ok": True})
+
+
+@app.get("/rss-media/{token}/{filename}")
+async def rss_media(token: str, filename: str):
+    raw_config = config_store.load_raw_config()
+    expected_token = str(raw_config.get("PANEL_RSS_TOKEN", "")).strip()
+    if not expected_token or not hmac.compare_digest(str(token or ""), expected_token):
+        raise HTTPException(status_code=404, detail="RSS media not found")
+    if not parse_bool(raw_config.get("PANEL_RSS_ENABLED", "true"), True):
+        raise HTTPException(status_code=404, detail="RSS media not found")
+    if not RSS_MEDIA_FILENAME_RE.fullmatch(str(filename or "")):
+        raise HTTPException(status_code=404, detail="RSS media not found")
+
+    media_path = rss_media_dir() / filename
+    if not media_path.exists() or not media_path.is_file():
+        raise HTTPException(status_code=404, detail="RSS media not found")
+    return FileResponse(path=str(media_path), media_type=rss_media_type_for_path(media_path))
 
 
 @app.get("/rss/{token}.xml")

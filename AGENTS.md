@@ -61,6 +61,7 @@ Primary persisted artifacts under `web_panel/data/`:
 - `state/downloads/`: temporary media files
 - `state/rss_feed.xml`: last successful RSS XML cache
 - `state/rss_session/`: temporary copied Telethon sessions for RSS refresh
+- `state/rss_media/`: cached images exposed through tokenized RSS media URLs
 - `logs/panel.log`: rotating app logs
 - `backups/*.zip`: snapshots and rollback artifacts
 
@@ -117,6 +118,7 @@ Panel/security/scheduler keys:
   - backup create/download/delete/restore endpoints
 - APIs:
   - `GET /rss/{token}.xml` tokenized RSS feed; returns valid XML from live refresh, cached XML, or an empty fallback
+  - `GET /rss-media/{token}/{filename}` tokenized cached RSS media file
   - `GET /api/status`
   - `GET /api/logs/tail`
   - `POST /api/logs/clear`

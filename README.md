@@ -126,6 +126,7 @@ http://你的域名或IP:端口/rss/<token>.xml
 - 可在“初始化接入”页面开启/关闭 RSS，并调整 `PANEL_RSS_ITEM_LIMIT`（默认 500，范围 50-2000）。
 - RSS 有缓存时会立即返回，并在后台刷新缓存；如果 Telegram 会话被转发任务占用、网络异常或临时失败，会返回上一次成功缓存的 XML；没有缓存时也会返回可订阅的空 RSS XML。
 - RSS 条目正文里的 `http://` 与 `https://` 链接会输出为可点击链接。
+- RSS 会缓存 Telegram 消息主图，并在条目正文中输出 `<img>`，同时附带 `enclosure` 图片字段。
 
 ## 7. 重要数据目录
 
@@ -138,6 +139,7 @@ http://你的域名或IP:端口/rss/<token>.xml
 - `state/downloads/`：媒体临时目录
 - `state/rss_feed.xml`：RSS 上一次成功刷新缓存
 - `state/rss_session/`：RSS 刷新时创建的临时会话副本目录
+- `state/rss_media/`：RSS 条目主图缓存目录
 - `logs/panel.log`：面板日志
 - `backups/*.zip`：备份文件
 
