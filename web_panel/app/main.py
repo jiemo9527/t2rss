@@ -74,6 +74,8 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 RSS_REFRESH_TIMEOUT_SECONDS = 20
+RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 120
+rss_refresh_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
@@ -409,6 +411,28 @@ async def build_live_rss_xml(request: Request, token: str, raw_config: Dict[str,
     return build_rss_xml(request, token, raw_config, items_xml)
 
 
+async def refresh_rss_cache_in_background(request: Request, token: str, raw_config: Dict[str, str]) -> None:
+    try:
+        rss_xml = await asyncio.wait_for(
+            build_live_rss_xml(request, token, raw_config),
+            timeout=RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS,
+        )
+        write_rss_cache(rss_xml)
+    except RssRefreshUnavailable as exc:
+        logger.info("RSS 后台刷新不可用，已保留旧缓存：%s", exc)
+    except asyncio.TimeoutError:
+        logger.warning("RSS 后台刷新超过 %s 秒，已保留旧缓存。", RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS)
+    except Exception:
+        logger.exception("RSS 后台刷新失败，已保留旧缓存。")
+
+
+def schedule_rss_cache_refresh(request: Request, token: str, raw_config: Dict[str, str]) -> None:
+    global rss_refresh_task
+    if rss_refresh_task and not rss_refresh_task.done():
+        return
+    rss_refresh_task = asyncio.create_task(refresh_rss_cache_in_background(request, token, dict(raw_config)))
+
+
 def parse_sources_input(text: str) -> list[str]:
     raw_text = str(text or "")
     normalized = raw_text.replace("，", ",")
@@ -653,9 +677,12 @@ async def rss_feed(token: str, request: Request):
         raise HTTPException(status_code=404, detail="RSS feed not found")
 
     cached_xml = read_rss_cache()
+    if cached_xml:
+        if not runner.is_running:
+            schedule_rss_cache_refresh(request, expected_token, raw_config)
+        return Response(content=cached_xml, media_type="application/rss+xml; charset=utf-8")
+
     if runner.is_running:
-        if cached_xml:
-            return Response(content=cached_xml, media_type="application/rss+xml; charset=utf-8")
         rss_xml = build_rss_xml(request, expected_token, raw_config, [], note="转发任务运行中，RSS 稍后会自动刷新")
         return Response(content=rss_xml, media_type="application/rss+xml; charset=utf-8")
 
@@ -678,6 +705,7 @@ async def rss_feed(token: str, request: Request):
             logger.warning("RSS 实时刷新超过 %s 秒，已返回缓存内容。", RSS_REFRESH_TIMEOUT_SECONDS)
             rss_xml = cached_xml
         else:
+            schedule_rss_cache_refresh(request, expected_token, raw_config)
             rss_xml = build_rss_xml(request, expected_token, raw_config, [], note="RSS 实时刷新超时，稍后会自动恢复")
     except Exception:
         cached_xml = cached_xml or read_rss_cache()

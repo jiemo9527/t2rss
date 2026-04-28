@@ -124,7 +124,7 @@ http://你的域名或IP:端口/rss/<token>.xml
 - RSS 地址带随机 token，适合复制到 RSS 阅读器订阅。
 - RSS 内容来自 `DESTINATION_CHANNEL` 目标频道最近消息。
 - 默认输出最近 500 条，可通过配置项 `PANEL_RSS_ITEM_LIMIT` 调整（范围 50-2000）。
-- RSS 会尽量实时刷新；如果 Telegram 会话被转发任务占用、网络异常或临时失败，会返回上一次成功缓存的 XML；没有缓存时也会返回可订阅的空 RSS XML。
+- RSS 有缓存时会立即返回，并在后台刷新缓存；如果 Telegram 会话被转发任务占用、网络异常或临时失败，会返回上一次成功缓存的 XML；没有缓存时也会返回可订阅的空 RSS XML。
 
 ## 7. 重要数据目录
 
