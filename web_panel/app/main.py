@@ -511,6 +511,9 @@ async def rss_feed(token: str, request: Request):
     if not expected_token or not hmac.compare_digest(str(token or ""), expected_token):
         raise HTTPException(status_code=404, detail="RSS feed not found")
 
+    if runner.is_running:
+        raise HTTPException(status_code=503, detail="Forwarder is running; please retry RSS later")
+
     api_id = str(raw_config.get("API_ID", "")).strip()
     api_hash = str(raw_config.get("API_HASH", "")).strip()
     destination_channel = str(raw_config.get("DESTINATION_CHANNEL", "")).strip()
