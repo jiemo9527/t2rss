@@ -66,8 +66,25 @@
             </div>
         </div>
 
+        <div class="settings-group">
+            <h3>三、RSS 订阅</h3>
+            <div class="form-grid">
+                <label class="toggle-row">
+                    <input type="checkbox" name="PANEL_RSS_ENABLED" {% if config.get('PANEL_RSS_ENABLED', 'true') == 'true' %}checked{% endif %}>
+                    <span class="toggle-slider" aria-hidden="true"></span>
+                    <span>开启 RSS 订阅地址</span>
+                </label>
+
+                <label>
+                    PANEL_RSS_ITEM_LIMIT（RSS 输出条数）
+                    <input type="number" min="50" max="2000" name="PANEL_RSS_ITEM_LIMIT" value="{{ config.get('PANEL_RSS_ITEM_LIMIT', '500') }}">
+                    <small class="field-hint">默认 500 条，允许范围 50-2000；RSS 有缓存时会立即返回并在后台刷新。</small>
+                </label>
+            </div>
+        </div>
+
         <div class="form-actions">
-            <button type="submit">保存初始化接入配置</button>
+            <button type="submit">保存初始化接入与 RSS 配置</button>
         </div>
     </form>
 </section>

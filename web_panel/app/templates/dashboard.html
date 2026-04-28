@@ -41,12 +41,16 @@
             <li><span>测试模式</span><strong>{{ "已开启" if config_preview.test_mode_enabled else "已关闭" }}</strong></li>
             <li><span>去重开关</span><strong>{{ "true" if config_preview.deduplication_enabled == "true" else "false" }}</strong></li>
             <li><span>去重扫描条数</span><strong>{{ config_preview.deduplication_cache_size }}</strong></li>
+            <li><span>RSS 订阅</span><strong>{{ "已开启" if config_preview.rss_enabled else "已关闭" }}</strong></li>
+            <li><span>RSS 输出条数</span><strong>{{ config_preview.rss_item_limit }} 条</strong></li>
             <li>
                 <span>RSS 订阅地址</span>
                 <strong>
                     {% if config_preview.rss_url %}
                     <a class="inline-link" href="{{ config_preview.rss_url }}" target="_blank" rel="noopener noreferrer">打开 RSS</a>
                     <code>{{ config_preview.rss_url }}</code>
+                    {% elif not config_preview.rss_enabled %}
+                    （已关闭）
                     {% else %}
                     （未生成）
                     {% endif %}

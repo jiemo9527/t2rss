@@ -3,6 +3,7 @@ import hmac
 import html
 import json
 import os
+import re
 import secrets
 import shutil
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth_security import LoginGuardStore, build_password_hash, ensure_auth_baseline, verify_password
 from .backup_manager import BackupManager
 from .checkpoint_store import ChannelCheckpointStore
-from .config_store import ConfigStore, parse_channel_sources, parse_csv, parse_int_csv
+from .config_store import ConfigStore, parse_bool, parse_channel_sources, parse_csv, parse_int_csv
 from .forwarder_service import ForwarderRunner, resolve_identifiers_preview
 from .history_store import RunHistoryStore
 from .logging_utils import create_logger, rebind_logger_file_handler
@@ -75,6 +76,8 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 RSS_REFRESH_TIMEOUT_SECONDS = 20
 RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 120
+RSS_HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+RSS_URL_TRAILING_CHARS = ".,;:!?)]}，。！？、；：）】》"
 rss_refresh_task: asyncio.Task | None = None
 
 
@@ -271,6 +274,30 @@ def rss_pub_date(message) -> str:
     return format_datetime(date_value)
 
 
+def rss_description_cdata(text: str) -> str:
+    raw = str(text or "（媒体消息）")
+    pieces: list[str] = []
+    position = 0
+
+    for match in RSS_HTTP_URL_RE.finditer(raw):
+        url = match.group(0)
+        while url and url[-1] in RSS_URL_TRAILING_CHARS:
+            url = url[:-1]
+        if not url:
+            continue
+
+        link_end = match.start() + len(url)
+        pieces.append(html.escape(raw[position : match.start()], quote=False))
+        escaped_href = html.escape(url, quote=True)
+        pieces.append(f'<a href="{escaped_href}">{html.escape(url, quote=False)}</a>')
+        pieces.append(html.escape(raw[link_end : match.end()], quote=False))
+        position = match.end()
+
+    pieces.append(html.escape(raw[position:], quote=False))
+    html_body = "".join(pieces).replace("\n", "<br />")
+    return f"<![CDATA[{html_body.replace(']]>', ']]]]><![CDATA[>')}]]>"
+
+
 class RssRefreshUnavailable(Exception):
     pass
 
@@ -388,7 +415,7 @@ async def build_live_rss_xml(request: Request, token: str, raw_config: Dict[str,
                 text = message_text_for_feed(message)
                 title = rss_title_from_text(text, f"Telegram 消息 {message_id}")
                 link = build_message_link(destination_channel, message_id) or feed_link
-                description = xml_escape(text or "（媒体消息）").replace("\n", "<br />")
+                description = rss_description_cdata(text)
                 guid = link or f"t2rss:{destination_channel}:{message_id}"
                 pub_date = rss_pub_date(message)
 
@@ -675,6 +702,8 @@ async def rss_feed(token: str, request: Request):
     expected_token = str(raw_config.get("PANEL_RSS_TOKEN", "")).strip()
     if not expected_token or not hmac.compare_digest(str(token or ""), expected_token):
         raise HTTPException(status_code=404, detail="RSS feed not found")
+    if not parse_bool(raw_config.get("PANEL_RSS_ENABLED", "true"), True):
+        raise HTTPException(status_code=404, detail="RSS feed not found")
 
     cached_xml = read_rss_cache()
     if cached_xml:
@@ -728,6 +757,8 @@ async def dashboard(request: Request):
     panel_settings = config_store.build_panel_settings()
     destination_display, destination_url = build_tme_link(raw_config.get("DESTINATION_CHANNEL", ""))
     rss_token = str(raw_config.get("PANEL_RSS_TOKEN", "")).strip()
+    rss_enabled = parse_bool(raw_config.get("PANEL_RSS_ENABLED", "true"), True)
+    rss_item_limit = safe_rss_limit(raw_config.get("PANEL_RSS_ITEM_LIMIT", "500"))
 
     keyword_blacklist = parse_csv(raw_config.get("KEYWORD_BLACKLIST", ""))
     text_replacement_terms = parse_csv(raw_config.get("TEXT_REPLACEMENT_TERMS", ""))
@@ -770,7 +801,9 @@ async def dashboard(request: Request):
                 "destination_channel": raw_config.get("DESTINATION_CHANNEL", ""),
                 "destination_display": destination_display,
                 "destination_url": destination_url,
-                "rss_url": build_rss_url(request, rss_token) if rss_token else "",
+                "rss_enabled": rss_enabled,
+                "rss_item_limit": rss_item_limit,
+                "rss_url": build_rss_url(request, rss_token) if rss_enabled and rss_token else "",
                 "source_summary": f"{enabled_source_count}/{total_source_count}",
                 "keyword_blacklist_text": "，".join(keyword_blacklist),
                 "keyword_blacklist_count": len(keyword_blacklist),
@@ -846,8 +879,10 @@ async def setup_save(request: Request):
         "API_HASH",
         "PHONE",
         "PASSWORD",
+        "PANEL_RSS_ENABLED",
+        "PANEL_RSS_ITEM_LIMIT",
     ]
-    payload = collect_form_payload(form, current, keys, bool_keys=set())
+    payload = collect_form_payload(form, current, keys, bool_keys={"PANEL_RSS_ENABLED"})
 
     # 敏感字段保存后不回显：页面提交为空时默认保持原值不变。
     sensitive_keys = {"API_ID", "API_HASH", "PHONE", "PASSWORD"}
@@ -859,6 +894,8 @@ async def setup_save(request: Request):
     payload["PANEL_ADMIN_PASSWORD"] = current.get("PANEL_ADMIN_PASSWORD", "")
     payload["PANEL_ADMIN_PASSWORD_HASH"] = current.get("PANEL_ADMIN_PASSWORD_HASH", "")
     payload["PANEL_ADMIN_USERNAME"] = current.get("PANEL_ADMIN_USERNAME", "admin")
+    payload["PANEL_RSS_TOKEN"] = current.get("PANEL_RSS_TOKEN", "")
+    payload["PANEL_RSS_ITEM_LIMIT"] = str(safe_rss_limit(payload.get("PANEL_RSS_ITEM_LIMIT", "500")))
 
     if not payload.get("PANEL_ADMIN_USERNAME", "").strip():
         payload["PANEL_ADMIN_USERNAME"] = "admin"
