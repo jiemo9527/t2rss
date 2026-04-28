@@ -127,6 +127,7 @@ http://你的域名或IP:端口/rss/<token>.xml
 - RSS 有缓存时会立即返回，并在后台刷新缓存；如果 Telegram 会话被转发任务占用、网络异常或临时失败，会返回上一次成功缓存的 XML；没有缓存时也会返回可订阅的空 RSS XML。
 - RSS 条目正文里的 `http://` 与 `https://` 链接会输出为可点击链接。
 - RSS 会缓存 Telegram 消息主图，并在条目正文中输出 `<img>`，同时附带 `enclosure` 图片字段。
+- RSS 条目会同时输出完整 `description` 与 `content:encoded`，不主动截断正文内容。
 
 ## 7. 重要数据目录
 

@@ -276,7 +276,7 @@ def rss_title_from_text(text: str, fallback: str) -> str:
     for line in str(text or "").splitlines():
         cleaned = line.strip()
         if cleaned:
-            return cleaned[:120]
+            return cleaned
     return fallback
 
 
@@ -503,7 +503,7 @@ def build_rss_xml(
     return "\n".join(
         [
             '<?xml version="1.0" encoding="UTF-8"?>',
-            '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+            '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">',
             "  <channel>",
             f"    <title>{xml_escape(feed_title)}</title>",
             f"    <link>{xml_escape(feed_link)}</link>",
@@ -581,6 +581,7 @@ async def build_live_rss_xml(request: Request, token: str, raw_config: Dict[str,
                 item_lines.extend(
                     [
                         f"      <description>{description}</description>",
+                        f"      <content:encoded>{description}</content:encoded>",
                         "    </item>",
                     ]
                 )
