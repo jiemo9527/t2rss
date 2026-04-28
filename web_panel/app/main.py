@@ -73,6 +73,7 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+RSS_REFRESH_TIMEOUT_SECONDS = 20
 
 
 @app.on_event("startup")
@@ -651,18 +652,35 @@ async def rss_feed(token: str, request: Request):
     if not expected_token or not hmac.compare_digest(str(token or ""), expected_token):
         raise HTTPException(status_code=404, detail="RSS feed not found")
 
+    cached_xml = read_rss_cache()
+    if runner.is_running:
+        if cached_xml:
+            return Response(content=cached_xml, media_type="application/rss+xml; charset=utf-8")
+        rss_xml = build_rss_xml(request, expected_token, raw_config, [], note="转发任务运行中，RSS 稍后会自动刷新")
+        return Response(content=rss_xml, media_type="application/rss+xml; charset=utf-8")
+
     try:
-        rss_xml = await build_live_rss_xml(request, expected_token, raw_config)
+        rss_xml = await asyncio.wait_for(
+            build_live_rss_xml(request, expected_token, raw_config),
+            timeout=RSS_REFRESH_TIMEOUT_SECONDS,
+        )
         write_rss_cache(rss_xml)
     except RssRefreshUnavailable as exc:
-        cached_xml = read_rss_cache()
+        cached_xml = cached_xml or read_rss_cache()
         if cached_xml:
             logger.info("RSS 实时刷新不可用，已返回缓存内容：%s", exc)
             rss_xml = cached_xml
         else:
             rss_xml = build_rss_xml(request, expected_token, raw_config, [], note=str(exc))
+    except asyncio.TimeoutError:
+        cached_xml = cached_xml or read_rss_cache()
+        if cached_xml:
+            logger.warning("RSS 实时刷新超过 %s 秒，已返回缓存内容。", RSS_REFRESH_TIMEOUT_SECONDS)
+            rss_xml = cached_xml
+        else:
+            rss_xml = build_rss_xml(request, expected_token, raw_config, [], note="RSS 实时刷新超时，稍后会自动恢复")
     except Exception:
-        cached_xml = read_rss_cache()
+        cached_xml = cached_xml or read_rss_cache()
         logger.exception("RSS 实时刷新失败，已尝试返回缓存内容。")
         if cached_xml:
             rss_xml = cached_xml
