@@ -881,11 +881,11 @@ async def rss_feed(token: str, request: Request):
 
     cached_xml = read_rss_cache()
     if cached_xml:
-        if not runner.is_running:
-            schedule_rss_cache_refresh(request, expected_token, raw_config)
+        schedule_rss_cache_refresh(request, expected_token, raw_config)
         return Response(content=cached_xml, media_type="application/rss+xml; charset=utf-8")
 
     if runner.is_running:
+        schedule_rss_cache_refresh(request, expected_token, raw_config)
         rss_xml = build_rss_xml(request, expected_token, raw_config, [], note="转发任务运行中，RSS 稍后会自动刷新")
         return Response(content=rss_xml, media_type="application/rss+xml; charset=utf-8")
 
