@@ -1,14 +1,18 @@
 import asyncio
+import hmac
+import html
 import json
 import os
 import secrets
 import shutil
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -21,6 +25,7 @@ from .forwarder_service import ForwarderRunner, resolve_identifiers_preview
 from .history_store import RunHistoryStore
 from .logging_utils import create_logger, rebind_logger_file_handler
 from .time_utils import now_shanghai_iso, timestamp_to_shanghai_iso
+from telethon import TelegramClient
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -45,6 +50,11 @@ if bootstrap_password:
         bootstrap_username,
         bootstrap_password,
     )
+
+rss_token_config = config_store.load_raw_config()
+if not str(rss_token_config.get("PANEL_RSS_TOKEN", "")).strip():
+    config_store.save_raw_config({"PANEL_RSS_TOKEN": secrets.token_urlsafe(24)})
+    logger.info("已生成 RSS 订阅 token。")
 
 raw_for_secret = config_store.load_raw_config()
 session_secret = str(raw_for_secret.get("PANEL_SESSION_SECRET", "")).strip() or os.environ.get("PANEL_SESSION_SECRET", "")
@@ -197,6 +207,65 @@ def build_tme_link(channel_text: str) -> tuple[str, str]:
     url = f"https://t.me/{token}"
     display = f"t.me/{token}"
     return display, url
+
+
+def build_rss_url(request: Request, token: str) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/rss/{token}.xml"
+
+
+def build_message_link(destination_channel: str, message_id: int) -> str:
+    raw = str(destination_channel or "").strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("https://t.me/") or raw.startswith("http://t.me/"):
+        base = raw.replace("http://", "https://", 1).rstrip("/")
+        return f"{base}/{message_id}"
+
+    token = raw.lstrip("@").strip()
+    if not token:
+        return ""
+    return f"https://t.me/{token}/{message_id}"
+
+
+def xml_escape(value: Any) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def safe_rss_limit(raw_value: str) -> int:
+    try:
+        parsed = int(str(raw_value or "").strip())
+    except ValueError:
+        return 500
+    return max(50, min(parsed, 2000))
+
+
+def message_text_for_feed(message) -> str:
+    return (
+        getattr(message, "raw_text", None)
+        or getattr(message, "message", None)
+        or getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    )
+
+
+def rss_title_from_text(text: str, fallback: str) -> str:
+    for line in str(text or "").splitlines():
+        cleaned = line.strip()
+        if cleaned:
+            return cleaned[:120]
+    return fallback
+
+
+def rss_pub_date(message) -> str:
+    date_value = getattr(message, "date", None)
+    if not date_value:
+        return format_datetime(datetime.now(timezone.utc))
+    if date_value.tzinfo is None:
+        date_value = date_value.replace(tzinfo=timezone.utc)
+    return format_datetime(date_value)
 
 
 def parse_sources_input(text: str) -> list[str]:
@@ -435,6 +504,80 @@ async def health() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.get("/rss/{token}.xml")
+async def rss_feed(token: str, request: Request):
+    raw_config = config_store.load_raw_config()
+    expected_token = str(raw_config.get("PANEL_RSS_TOKEN", "")).strip()
+    if not expected_token or not hmac.compare_digest(str(token or ""), expected_token):
+        raise HTTPException(status_code=404, detail="RSS feed not found")
+
+    api_id = str(raw_config.get("API_ID", "")).strip()
+    api_hash = str(raw_config.get("API_HASH", "")).strip()
+    destination_channel = str(raw_config.get("DESTINATION_CHANNEL", "")).strip()
+    if not api_id or not api_hash or not destination_channel:
+        raise HTTPException(status_code=503, detail="RSS feed is not configured")
+    if not config_store.session_file.exists():
+        raise HTTPException(status_code=503, detail="Telegram session is missing")
+
+    try:
+        api_id_int = int(api_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="API_ID is invalid") from exc
+
+    item_limit = safe_rss_limit(raw_config.get("PANEL_RSS_ITEM_LIMIT", "500"))
+    destination_display, destination_url = build_tme_link(destination_channel)
+    feed_title = f"T2RSS - {destination_display or destination_channel}"
+    feed_link = destination_url or str(request.base_url).rstrip("/")
+    self_url = build_rss_url(request, expected_token)
+
+    items_xml: list[str] = []
+    async with TelegramClient(str(config_store.session_base_path), api_id_int, api_hash) as client:
+        if not await client.is_user_authorized():
+            raise HTTPException(status_code=503, detail="Telegram session is not authorized")
+
+        async for message in client.iter_messages(destination_channel, limit=item_limit):
+            message_id = int(getattr(message, "id", 0) or 0)
+            text = message_text_for_feed(message)
+            title = rss_title_from_text(text, f"Telegram 消息 {message_id}")
+            link = build_message_link(destination_channel, message_id) or feed_link
+            description = xml_escape(text or "（媒体消息）").replace("\n", "<br />")
+            guid = link or f"t2rss:{destination_channel}:{message_id}"
+            pub_date = rss_pub_date(message)
+
+            items_xml.append(
+                "\n".join(
+                    [
+                        "    <item>",
+                        f"      <title>{xml_escape(title)}</title>",
+                        f"      <link>{xml_escape(link)}</link>",
+                        f"      <guid isPermaLink=\"false\">{xml_escape(guid)}</guid>",
+                        f"      <pubDate>{xml_escape(pub_date)}</pubDate>",
+                        f"      <description>{description}</description>",
+                        "    </item>",
+                    ]
+                )
+            )
+
+    rss_xml = "\n".join(
+        [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+            "  <channel>",
+            f"    <title>{xml_escape(feed_title)}</title>",
+            f"    <link>{xml_escape(feed_link)}</link>",
+            f"    <atom:link href=\"{xml_escape(self_url)}\" rel=\"self\" type=\"application/rss+xml\" />",
+            "    <description>T2RSS 目标频道消息订阅</description>",
+            "    <language>zh-CN</language>",
+            f"    <lastBuildDate>{xml_escape(format_datetime(datetime.now(timezone.utc)))}</lastBuildDate>",
+            *items_xml,
+            "  </channel>",
+            "</rss>",
+        ]
+    )
+
+    return Response(content=rss_xml, media_type="application/rss+xml; charset=utf-8")
+
+
 @app.get("/")
 async def dashboard(request: Request):
     auth_redirect = auth_redirect_if_needed(request)
@@ -444,6 +587,7 @@ async def dashboard(request: Request):
     raw_config = config_store.load_raw_config()
     panel_settings = config_store.build_panel_settings()
     destination_display, destination_url = build_tme_link(raw_config.get("DESTINATION_CHANNEL", ""))
+    rss_token = str(raw_config.get("PANEL_RSS_TOKEN", "")).strip()
 
     keyword_blacklist = parse_csv(raw_config.get("KEYWORD_BLACKLIST", ""))
     text_replacement_terms = parse_csv(raw_config.get("TEXT_REPLACEMENT_TERMS", ""))
@@ -486,6 +630,7 @@ async def dashboard(request: Request):
                 "destination_channel": raw_config.get("DESTINATION_CHANNEL", ""),
                 "destination_display": destination_display,
                 "destination_url": destination_url,
+                "rss_url": build_rss_url(request, rss_token) if rss_token else "",
                 "source_summary": f"{enabled_source_count}/{total_source_count}",
                 "keyword_blacklist_text": "，".join(keyword_blacklist),
                 "keyword_blacklist_count": len(keyword_blacklist),

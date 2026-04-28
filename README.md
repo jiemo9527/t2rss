@@ -108,8 +108,23 @@ docker logs t2rss-web-panel
 - 自动运行、总超时、强制中止
 - 备份创建/下载/删除/恢复（恢复前自动创建回滚备份）
 - 计划与备份页支持一键清理垃圾/缓存/无用临时文件
+- 生成带 token 的 RSS 订阅地址，输出目标频道最近消息
 
-## 6. 重要数据目录
+## 6. RSS 订阅
+
+首页“转发配置快照”会显示 RSS 订阅地址，格式类似：
+
+```text
+http://你的域名或IP:端口/rss/<token>.xml
+```
+
+说明：
+
+- RSS 地址带随机 token，适合复制到 RSS 阅读器订阅。
+- RSS 内容来自 `DESTINATION_CHANNEL` 目标频道最近消息。
+- 默认输出最近 500 条，可通过配置项 `PANEL_RSS_ITEM_LIMIT` 调整（范围 50-2000）。
+
+## 7. 重要数据目录
 
 `web_panel/data/` 下的关键文件：
 
@@ -121,7 +136,7 @@ docker logs t2rss-web-panel
 - `logs/panel.log`：面板日志
 - `backups/*.zip`：备份文件
 
-## 7. 常用运维命令
+## 8. 常用运维命令
 
 重建并启动：
 
@@ -150,7 +165,7 @@ cd web_panel
 docker compose down
 ```
 
-## 8. systemd 自启服务
+## 9. systemd 自启服务
 
 仓库已提供 systemd 服务模板：`deploy/systemd/t2rss-panel.service`
 
@@ -172,14 +187,14 @@ sudo systemctl restart t2rss-panel
 sudo journalctl -u t2rss-panel -f
 ```
 
-## 9. 常见问题
+## 10. 常见问题
 
 - 登录被锁：等待 `PANEL_LOGIN_LOCK_SECONDS` 到期，或在配置中调整锁定策略。
 - 提示会话缺失：重新上传会话或在容器里运行 `tools/create_session.py`。
 - 没有转发：检查来源是否已解析到 CID 且处于启用状态，目标频道是否可访问。
 - 去重看起来不生效：确认 `DEDUPLICATION_ENABLED=true`，并适当增大 `DEDUPLICATION_CACHE_SIZE`。
 
-## 10. 分支说明
+## 11. 分支说明
 
 - `main`：Web 管理面板版本（当前主线）
 - `cli`：旧版 CLI 脚本版本
