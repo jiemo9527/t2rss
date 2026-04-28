@@ -268,6 +268,146 @@ def rss_pub_date(message) -> str:
     return format_datetime(date_value)
 
 
+class RssRefreshUnavailable(Exception):
+    pass
+
+
+def rss_cache_file() -> Path:
+    return config_store.state_dir / "rss_feed.xml"
+
+
+def read_rss_cache() -> str | None:
+    path = rss_cache_file()
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def write_rss_cache(content: str) -> None:
+    path = rss_cache_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    temporary_path.write_text(content, encoding="utf-8")
+    temporary_path.replace(path)
+
+
+def create_rss_session_copy() -> Path:
+    rss_session_dir = config_store.state_dir / "rss_session"
+    rss_session_dir.mkdir(parents=True, exist_ok=True)
+    session_base = rss_session_dir / f"t2rss_rss_{secrets.token_hex(8)}"
+
+    source_candidates = [
+        (config_store.session_file, Path(f"{session_base}.session")),
+        (Path(f"{config_store.session_base_path}.session-journal"), Path(f"{session_base}.session-journal")),
+        (Path(f"{config_store.session_base_path}.session-shm"), Path(f"{session_base}.session-shm")),
+        (Path(f"{config_store.session_base_path}.session-wal"), Path(f"{session_base}.session-wal")),
+    ]
+    for source, destination in source_candidates:
+        if source.exists():
+            shutil.copy2(source, destination)
+
+    return session_base
+
+
+def cleanup_rss_session_copy(session_base: Path) -> None:
+    for candidate in [
+        Path(f"{session_base}.session"),
+        Path(f"{session_base}.session-journal"),
+        Path(f"{session_base}.session-shm"),
+        Path(f"{session_base}.session-wal"),
+    ]:
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def build_rss_xml(
+    request: Request,
+    token: str,
+    raw_config: Dict[str, str],
+    items_xml: list[str],
+    note: str = "T2RSS 目标频道消息订阅",
+) -> str:
+    destination_channel = str(raw_config.get("DESTINATION_CHANNEL", "")).strip()
+    destination_display, destination_url = build_tme_link(destination_channel)
+    feed_title = f"T2RSS - {destination_display or destination_channel or 'Feed'}"
+    feed_link = destination_url or str(request.base_url).rstrip("/")
+    self_url = build_rss_url(request, token)
+
+    return "\n".join(
+        [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+            "  <channel>",
+            f"    <title>{xml_escape(feed_title)}</title>",
+            f"    <link>{xml_escape(feed_link)}</link>",
+            f"    <atom:link href=\"{xml_escape(self_url)}\" rel=\"self\" type=\"application/rss+xml\" />",
+            f"    <description>{xml_escape(note)}</description>",
+            "    <language>zh-CN</language>",
+            f"    <lastBuildDate>{xml_escape(format_datetime(datetime.now(timezone.utc)))}</lastBuildDate>",
+            *items_xml,
+            "  </channel>",
+            "</rss>",
+        ]
+    )
+
+
+async def build_live_rss_xml(request: Request, token: str, raw_config: Dict[str, str]) -> str:
+    api_id = str(raw_config.get("API_ID", "")).strip()
+    api_hash = str(raw_config.get("API_HASH", "")).strip()
+    destination_channel = str(raw_config.get("DESTINATION_CHANNEL", "")).strip()
+    if not api_id or not api_hash or not destination_channel:
+        raise RssRefreshUnavailable("RSS 尚未配置 API 或目标频道")
+    if not config_store.session_file.exists():
+        raise RssRefreshUnavailable("Telegram 会话缺失，暂时无法刷新 RSS")
+
+    try:
+        api_id_int = int(api_id)
+    except ValueError as exc:
+        raise RssRefreshUnavailable("API_ID 无效，暂时无法刷新 RSS") from exc
+    item_limit = safe_rss_limit(raw_config.get("PANEL_RSS_ITEM_LIMIT", "500"))
+    _, destination_url = build_tme_link(destination_channel)
+    feed_link = destination_url or str(request.base_url).rstrip("/")
+    items_xml: list[str] = []
+
+    session_copy_base = create_rss_session_copy()
+    try:
+        async with TelegramClient(str(session_copy_base), api_id_int, api_hash) as client:
+            if not await client.is_user_authorized():
+                raise RssRefreshUnavailable("Telegram 会话未授权，暂时无法刷新 RSS")
+
+            async for message in client.iter_messages(destination_channel, limit=item_limit):
+                message_id = int(getattr(message, "id", 0) or 0)
+                text = message_text_for_feed(message)
+                title = rss_title_from_text(text, f"Telegram 消息 {message_id}")
+                link = build_message_link(destination_channel, message_id) or feed_link
+                description = xml_escape(text or "（媒体消息）").replace("\n", "<br />")
+                guid = link or f"t2rss:{destination_channel}:{message_id}"
+                pub_date = rss_pub_date(message)
+
+                items_xml.append(
+                    "\n".join(
+                        [
+                            "    <item>",
+                            f"      <title>{xml_escape(title)}</title>",
+                            f"      <link>{xml_escape(link)}</link>",
+                            f"      <guid isPermaLink=\"false\">{xml_escape(guid)}</guid>",
+                            f"      <pubDate>{xml_escape(pub_date)}</pubDate>",
+                            f"      <description>{description}</description>",
+                            "    </item>",
+                        ]
+                    )
+                )
+    finally:
+        cleanup_rss_session_copy(session_copy_base)
+
+    return build_rss_xml(request, token, raw_config, items_xml)
+
+
 def parse_sources_input(text: str) -> list[str]:
     raw_text = str(text or "")
     normalized = raw_text.replace("，", ",")
@@ -511,72 +651,23 @@ async def rss_feed(token: str, request: Request):
     if not expected_token or not hmac.compare_digest(str(token or ""), expected_token):
         raise HTTPException(status_code=404, detail="RSS feed not found")
 
-    if runner.is_running:
-        raise HTTPException(status_code=503, detail="Forwarder is running; please retry RSS later")
-
-    api_id = str(raw_config.get("API_ID", "")).strip()
-    api_hash = str(raw_config.get("API_HASH", "")).strip()
-    destination_channel = str(raw_config.get("DESTINATION_CHANNEL", "")).strip()
-    if not api_id or not api_hash or not destination_channel:
-        raise HTTPException(status_code=503, detail="RSS feed is not configured")
-    if not config_store.session_file.exists():
-        raise HTTPException(status_code=503, detail="Telegram session is missing")
-
     try:
-        api_id_int = int(api_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail="API_ID is invalid") from exc
-
-    item_limit = safe_rss_limit(raw_config.get("PANEL_RSS_ITEM_LIMIT", "500"))
-    destination_display, destination_url = build_tme_link(destination_channel)
-    feed_title = f"T2RSS - {destination_display or destination_channel}"
-    feed_link = destination_url or str(request.base_url).rstrip("/")
-    self_url = build_rss_url(request, expected_token)
-
-    items_xml: list[str] = []
-    async with TelegramClient(str(config_store.session_base_path), api_id_int, api_hash) as client:
-        if not await client.is_user_authorized():
-            raise HTTPException(status_code=503, detail="Telegram session is not authorized")
-
-        async for message in client.iter_messages(destination_channel, limit=item_limit):
-            message_id = int(getattr(message, "id", 0) or 0)
-            text = message_text_for_feed(message)
-            title = rss_title_from_text(text, f"Telegram 消息 {message_id}")
-            link = build_message_link(destination_channel, message_id) or feed_link
-            description = xml_escape(text or "（媒体消息）").replace("\n", "<br />")
-            guid = link or f"t2rss:{destination_channel}:{message_id}"
-            pub_date = rss_pub_date(message)
-
-            items_xml.append(
-                "\n".join(
-                    [
-                        "    <item>",
-                        f"      <title>{xml_escape(title)}</title>",
-                        f"      <link>{xml_escape(link)}</link>",
-                        f"      <guid isPermaLink=\"false\">{xml_escape(guid)}</guid>",
-                        f"      <pubDate>{xml_escape(pub_date)}</pubDate>",
-                        f"      <description>{description}</description>",
-                        "    </item>",
-                    ]
-                )
-            )
-
-    rss_xml = "\n".join(
-        [
-            '<?xml version="1.0" encoding="UTF-8"?>',
-            '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
-            "  <channel>",
-            f"    <title>{xml_escape(feed_title)}</title>",
-            f"    <link>{xml_escape(feed_link)}</link>",
-            f"    <atom:link href=\"{xml_escape(self_url)}\" rel=\"self\" type=\"application/rss+xml\" />",
-            "    <description>T2RSS 目标频道消息订阅</description>",
-            "    <language>zh-CN</language>",
-            f"    <lastBuildDate>{xml_escape(format_datetime(datetime.now(timezone.utc)))}</lastBuildDate>",
-            *items_xml,
-            "  </channel>",
-            "</rss>",
-        ]
-    )
+        rss_xml = await build_live_rss_xml(request, expected_token, raw_config)
+        write_rss_cache(rss_xml)
+    except RssRefreshUnavailable as exc:
+        cached_xml = read_rss_cache()
+        if cached_xml:
+            logger.info("RSS 实时刷新不可用，已返回缓存内容：%s", exc)
+            rss_xml = cached_xml
+        else:
+            rss_xml = build_rss_xml(request, expected_token, raw_config, [], note=str(exc))
+    except Exception:
+        cached_xml = read_rss_cache()
+        logger.exception("RSS 实时刷新失败，已尝试返回缓存内容。")
+        if cached_xml:
+            rss_xml = cached_xml
+        else:
+            rss_xml = build_rss_xml(request, expected_token, raw_config, [], note="RSS 暂时无法刷新，稍后会自动恢复")
 
     return Response(content=rss_xml, media_type="application/rss+xml; charset=utf-8")
 

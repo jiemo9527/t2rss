@@ -59,6 +59,8 @@ Primary persisted artifacts under `web_panel/data/`:
   - `login_guard` (anti-bruteforce state)
 - `state/forwarder.lock`: single-run lock
 - `state/downloads/`: temporary media files
+- `state/rss_feed.xml`: last successful RSS XML cache
+- `state/rss_session/`: temporary copied Telethon sessions for RSS refresh
 - `logs/panel.log`: rotating app logs
 - `backups/*.zip`: snapshots and rollback artifacts
 
@@ -89,6 +91,8 @@ Panel/security/scheduler keys:
 - `PANEL_LOGIN_MAX_FAILURES`
 - `PANEL_LOGIN_WINDOW_SECONDS`
 - `PANEL_LOGIN_LOCK_SECONDS`
+- `PANEL_RSS_TOKEN`
+- `PANEL_RSS_ITEM_LIMIT`
 
 ## 6) Web Panel Route Map (high-level)
 
@@ -111,6 +115,7 @@ Panel/security/scheduler keys:
   - `POST /session/upload`, `POST /session/delete`
   - backup create/download/delete/restore endpoints
 - APIs:
+  - `GET /rss/{token}.xml` tokenized RSS feed; returns valid XML from live refresh, cached XML, or an empty fallback
   - `GET /api/status`
   - `GET /api/logs/tail`
   - `POST /api/logs/clear`

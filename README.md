@@ -109,6 +109,7 @@ docker logs t2rss-web-panel
 - 备份创建/下载/删除/恢复（恢复前自动创建回滚备份）
 - 计划与备份页支持一键清理垃圾/缓存/无用临时文件
 - 生成带 token 的 RSS 订阅地址，输出目标频道最近消息
+- RSS 刷新使用临时会话副本，实时刷新失败时自动返回上一次缓存，避免影响订阅器抓取
 
 ## 6. RSS 订阅
 
@@ -123,6 +124,7 @@ http://你的域名或IP:端口/rss/<token>.xml
 - RSS 地址带随机 token，适合复制到 RSS 阅读器订阅。
 - RSS 内容来自 `DESTINATION_CHANNEL` 目标频道最近消息。
 - 默认输出最近 500 条，可通过配置项 `PANEL_RSS_ITEM_LIMIT` 调整（范围 50-2000）。
+- RSS 会尽量实时刷新；如果 Telegram 会话被转发任务占用、网络异常或临时失败，会返回上一次成功缓存的 XML；没有缓存时也会返回可订阅的空 RSS XML。
 
 ## 7. 重要数据目录
 
@@ -133,6 +135,8 @@ http://你的域名或IP:端口/rss/<token>.xml
 - `session/t2rss.session`：Telegram 会话
 - `state/forwarder.lock`：运行锁
 - `state/downloads/`：媒体临时目录
+- `state/rss_feed.xml`：RSS 上一次成功刷新缓存
+- `state/rss_session/`：RSS 刷新时创建的临时会话副本目录
 - `logs/panel.log`：面板日志
 - `backups/*.zip`：备份文件
 

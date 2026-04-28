@@ -24,7 +24,7 @@
 - 备份管理：创建、下载、删除系统数据备份。
 - 备份恢复：支持从已有备份恢复，或上传 ZIP 备份恢复。
 - 缓存清理：支持清理下载缓存、临时恢复包、会话 sidecar 和无效锁文件。
-- RSS 订阅：生成带 token 的 RSS 地址，输出目标频道最近消息。
+- RSS 订阅：生成带 token 的 RSS 地址，输出目标频道最近消息；刷新失败时返回缓存，保证订阅器始终可抓取 XML。
 - 自动运行：支持后台定时自动触发。
 - 管理员安全登录：默认开启登录校验与防爆破锁定。
 - 断点管理面板：支持 `last_id` 的创建、查看、修改、删除。
@@ -60,6 +60,8 @@
 - `data/panel.db`：运行历史、登录防爆破、频道断点（`channel_last_id`）数据库。
 - `data/state/forwarder.lock`：运行锁文件。
 - `data/state/downloads/`：媒体临时目录。
+- `data/state/rss_feed.xml`：RSS 上一次成功刷新缓存。
+- `data/state/rss_session/`：RSS 刷新使用的临时会话副本目录。
 - `data/backups/*.zip`：备份压缩包。
 
 ## Docker 启动
