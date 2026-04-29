@@ -77,6 +77,8 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 RSS_REFRESH_TIMEOUT_SECONDS = 20
 RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 300
+RSS_IMAGE_DISPLAY_WIDTH = 720
+RSS_IMAGE_DISPLAY_MAX_HEIGHT = 960
 RSS_HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 RSS_URL_TRAILING_CHARS = ".,;:!?)]}，。！？、；：）】》"
 RSS_MEDIA_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -351,7 +353,14 @@ def rss_description_cdata(text: str, image_url: str = "", link_entities: list[tu
 
     if image_url:
         escaped_image_url = html.escape(image_url, quote=True)
-        pieces.append(f'<p><img src="{escaped_image_url}" alt="" /></p>')
+        pieces.append(
+            (
+                f'<p><img src="{escaped_image_url}" alt="" width="{RSS_IMAGE_DISPLAY_WIDTH}" '
+                f'style="width:100%;max-width:{RSS_IMAGE_DISPLAY_WIDTH}px;'
+                f'height:auto;max-height:{RSS_IMAGE_DISPLAY_MAX_HEIGHT}px;'
+                'object-fit:contain;display:block;margin:0 0 12px 0;border-radius:8px;" /></p>'
+            )
+        )
 
     position = 0
     for start, end, href in link_entities or []:
