@@ -8,6 +8,7 @@ import secrets
 import shutil
 from datetime import datetime, timezone
 from email.utils import format_datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlencode
@@ -16,6 +17,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.middleware.sessions import SessionMiddleware
 
 from .auth_security import LoginGuardStore, build_password_hash, ensure_auth_baseline, verify_password
@@ -79,6 +81,8 @@ RSS_REFRESH_TIMEOUT_SECONDS = 20
 RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 300
 RSS_IMAGE_DISPLAY_WIDTH = 720
 RSS_IMAGE_DISPLAY_MAX_HEIGHT = 960
+RSS_IMAGE_JPEG_QUALITY = 85
+RSS_IMAGE_CACHE_VERSION = f"img{RSS_IMAGE_DISPLAY_WIDTH}x{RSS_IMAGE_DISPLAY_MAX_HEIGHT}"
 RSS_HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 RSS_URL_TRAILING_CHARS = ".,;:!?)]}，。！？、；：）】》"
 RSS_MEDIA_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -501,7 +505,35 @@ def rss_message_image_metadata(message) -> tuple[str, str] | None:
 def rss_media_prefix(destination_channel: str, message_id: int) -> str:
     channel_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", str(destination_channel or "channel")).strip("_")
     channel_slug = channel_slug[:80] or "channel"
-    return f"{channel_slug}_{message_id}"
+    return f"{channel_slug}_{message_id}_{RSS_IMAGE_CACHE_VERSION}"
+
+
+def standardize_rss_image_payload(payload: bytes, fallback_ext: str, fallback_mime_type: str) -> tuple[bytes, str, str]:
+    try:
+        with Image.open(BytesIO(payload)) as image:
+            image = ImageOps.exif_transpose(image)
+            resampling_filter = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            image.thumbnail((RSS_IMAGE_DISPLAY_WIDTH, RSS_IMAGE_DISPLAY_MAX_HEIGHT), resampling_filter)
+
+            if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+                alpha = image.convert("RGBA").getchannel("A")
+                background = Image.new("RGB", image.size, (255, 255, 255))
+                background.paste(image.convert("RGBA"), mask=alpha)
+                image = background
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+
+            output = BytesIO()
+            image.save(
+                output,
+                format="JPEG",
+                quality=RSS_IMAGE_JPEG_QUALITY,
+                optimize=True,
+                progressive=True,
+            )
+            return output.getvalue(), ".jpg", "image/jpeg"
+    except (OSError, ValueError, UnidentifiedImageError):
+        return payload, fallback_ext, fallback_mime_type
 
 
 async def cache_rss_message_image(
@@ -528,12 +560,13 @@ async def cache_rss_message_image(
         if existing.is_file() and existing.suffix.lower() in RSS_IMAGE_MEDIA_TYPES:
             return rss_media_payload(existing, request, token)
 
-    target_path = media_dir / f"{prefix}{ext}"
     temporary_path = media_dir / f"{prefix}.{secrets.token_hex(8)}.tmp"
     try:
         payload = await client.download_media(message, file=bytes)
         if not payload:
             return None
+        payload, ext, mime_type = standardize_rss_image_payload(payload, ext, mime_type)
+        target_path = media_dir / f"{prefix}{ext}"
         temporary_path.write_bytes(payload)
         temporary_path.replace(target_path)
     finally:
