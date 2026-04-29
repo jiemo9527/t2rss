@@ -313,26 +313,92 @@ def rss_linkify_plain_text(raw: str) -> str:
     return "".join(pieces)
 
 
+def rss_utf16_boundaries(text: str) -> dict[int, int]:
+    boundaries = {0: 0}
+    units = 0
+    for index, char in enumerate(str(text or "")):
+        units += len(char.encode("utf-16-le")) // 2
+        boundaries[units] = index + 1
+    return boundaries
+
+
+def rss_entity_text_map(message) -> dict[int, str]:
+    get_entities_text = getattr(message, "get_entities_text", None)
+    if not callable(get_entities_text):
+        return {}
+
+    results: dict[int, str] = {}
+    for entity_type in (MessageEntityTextUrl, MessageEntityUrl):
+        try:
+            pairs = get_entities_text(entity_type)
+        except Exception:
+            continue
+        try:
+            iterator = iter(pairs)
+        except TypeError:
+            continue
+        for pair in iterator:
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                continue
+            entity, entity_text = pair
+            results[id(entity)] = str(entity_text or "")
+    return results
+
+
+def rss_entity_span(content: str, entity, expected_text: str, utf16_boundaries: dict[int, int]) -> tuple[int, int] | None:
+    offset = int(getattr(entity, "offset", 0) or 0)
+    length = int(getattr(entity, "length", 0) or 0)
+    if length <= 0 or offset < 0:
+        return None
+
+    raw_span = None
+    raw_end = offset + length
+    if raw_end <= len(content):
+        raw_span = (offset, raw_end)
+
+    utf16_span = None
+    utf16_start = utf16_boundaries.get(offset)
+    utf16_end = utf16_boundaries.get(raw_end)
+    if utf16_start is not None and utf16_end is not None and utf16_start <= utf16_end:
+        utf16_span = (utf16_start, utf16_end)
+
+    if expected_text:
+        if utf16_span and content[utf16_span[0] : utf16_span[1]] == expected_text:
+            return utf16_span
+        if raw_span and content[raw_span[0] : raw_span[1]] == expected_text:
+            return raw_span
+
+    if utf16_span and raw_span and utf16_span != raw_span:
+        if any(ord(char) > 0xFFFF for char in content[:offset]):
+            return utf16_span
+
+    return raw_span or utf16_span
+
+
 def rss_link_entities_from_message(message, text: str) -> list[tuple[int, int, str]]:
     content = str(text or "")
     if not content:
         return []
 
     candidates: list[tuple[int, int, str]] = []
+    utf16_boundaries = rss_utf16_boundaries(content)
+    expected_by_entity = rss_entity_text_map(message)
     for entity in getattr(message, "entities", None) or []:
-        start = int(getattr(entity, "offset", 0) or 0)
-        length = int(getattr(entity, "length", 0) or 0)
-        end = start + length
-        if length <= 0 or start < 0 or end > len(content):
-            continue
-
         if isinstance(entity, MessageEntityTextUrl):
             href = str(getattr(entity, "url", "") or "").strip()
         elif isinstance(entity, MessageEntityUrl):
-            href = content[start:end].strip()
+            href = ""
         else:
             continue
 
+        expected_text = expected_by_entity.get(id(entity), "")
+        span = rss_entity_span(content, entity, expected_text, utf16_boundaries)
+        if not span:
+            continue
+
+        start, end = span
+        if isinstance(entity, MessageEntityUrl):
+            href = content[start:end].strip()
         if not href:
             continue
         candidates.append((start, end, href))
