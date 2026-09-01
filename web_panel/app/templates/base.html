@@ -31,14 +31,17 @@
             <a href="/plan-backup">计划与备份</a>
             <a href="/logout">退出登录</a>
         </nav>
-        <div class="theme-switch">
-            <label for="theme-select">主题</label>
-            <select id="theme-select" class="theme-select">
-                <option value="ocean">海湾蓝</option>
-                <option value="sunrise">晨曦橙</option>
-                <option value="forest">森林绿</option>
-                <option value="slate">岩灰夜</option>
-            </select>
+        <div class="topbar-tools">
+            <span class="app-version" title="T2RSS 管理面板版本">v1.0.0</span>
+            <div class="theme-switch">
+                <label for="theme-select">主题</label>
+                <select id="theme-select" class="theme-select">
+                    <option value="ocean">海湾蓝</option>
+                    <option value="sunrise">晨曦橙</option>
+                    <option value="forest">森林绿</option>
+                    <option value="slate">岩灰夜</option>
+                </select>
+            </div>
         </div>
     </div>
 </header>
@@ -50,6 +53,11 @@
 
     {% block content %}{% endblock %}
 </main>
+<footer class="site-footer">
+    <div class="container">
+        <a href="https://github.com/jiemo9527/t2rss" target="_blank" rel="noopener noreferrer">GitHub · jiemo9527/t2rss</a>
+    </div>
+</footer>
 <script>
 (function () {
     var select = document.getElementById("theme-select");
