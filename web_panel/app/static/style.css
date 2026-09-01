@@ -675,19 +675,47 @@ th {
 
 .site-footer {
     margin-top: 2rem;
-    padding: 1rem 0 1.5rem;
-    text-align: center;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
     color: var(--muted);
-    font-size: 0.88rem;
+    font-size: 0.84rem;
+}
+
+.site-footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+    min-height: 54px;
 }
 
 .site-footer a {
-    color: var(--brand);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text);
     text-decoration: none;
 }
 
 .site-footer a:hover {
-    text-decoration: underline;
+    color: var(--brand);
+}
+
+.github-mark {
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.inline-source-action {
+    display: inline;
+}
+
+@media (max-width: 640px) {
+    .site-footer-content {
+        flex-direction: column;
+        justify-content: center;
+        padding: 0.7rem 0;
+    }
 }
 
 pre,

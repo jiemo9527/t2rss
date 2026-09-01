@@ -86,6 +86,7 @@
             <th>近30天</th>
             <th>更新时间（上海时间）</th>
             <th>状态</th>
+            <th>快捷操作</th>
         </tr>
         </thead>
         <tbody id="checkpoint-table-body">
@@ -97,6 +98,13 @@
             <td>{{ item.fetched_30d if item.fetched_30d is defined else 0 }}</td>
             <td>{{ item.updated_at }}</td>
             <td>{{ item.status_text }}</td>
+            <td>
+                <form method="post" action="/dashboard/sources/{{ item.channel_id }}/toggle" class="inline-source-action">
+                    <button type="submit" class="button-small {% if item.status_text == '开启' %}button-danger{% else %}button-secondary{% endif %}">
+                        {% if item.status_text == '开启' %}暂停{% else %}开启{% endif %}
+                    </button>
+                </form>
+            </td>
         </tr>
         {% endfor %}
         </tbody>
@@ -177,12 +185,26 @@
             var statusTd = document.createElement("td");
             statusTd.textContent = String(item.status_text || "-");
 
+            var actionTd = document.createElement("td");
+            var actionForm = document.createElement("form");
+            actionForm.method = "post";
+            actionForm.action = "/dashboard/sources/" + encodeURIComponent(String(item.channel_id || "")) + "/toggle";
+            actionForm.className = "inline-source-action";
+            var actionBtn = document.createElement("button");
+            var enabled = item.status_text === "开启";
+            actionBtn.type = "submit";
+            actionBtn.className = "button-small " + (enabled ? "button-danger" : "button-secondary");
+            actionBtn.textContent = enabled ? "暂停" : "开启";
+            actionForm.appendChild(actionBtn);
+            actionTd.appendChild(actionForm);
+
             tr.appendChild(channelTd);
             tr.appendChild(lastIdTd);
             tr.appendChild(fetched7Td);
             tr.appendChild(fetched30Td);
             tr.appendChild(updatedTd);
             tr.appendChild(statusTd);
+            tr.appendChild(actionTd);
             checkpointBody.appendChild(tr);
         });
     }

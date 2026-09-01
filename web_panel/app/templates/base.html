@@ -32,7 +32,7 @@
             <a href="/logout">退出登录</a>
         </nav>
         <div class="topbar-tools">
-            <span class="app-version" title="T2RSS 管理面板版本">v1.0.0</span>
+            <span class="app-version" title="GHCR 镜像构建版本">{{ panel_version }}</span>
             <div class="theme-switch">
                 <label for="theme-select">主题</label>
                 <select id="theme-select" class="theme-select">
@@ -54,8 +54,13 @@
     {% block content %}{% endblock %}
 </main>
 <footer class="site-footer">
-    <div class="container">
-        <a href="https://github.com/jiemo9527/t2rss" target="_blank" rel="noopener noreferrer">GitHub · jiemo9527/t2rss</a>
+    <div class="container site-footer-content">
+        <span>T2RSS 管理面板</span>
+        <a href="https://github.com/jiemo9527/t2rss" target="_blank" rel="noopener noreferrer" aria-label="在 GitHub 打开 jiemo9527/t2rss 项目">
+            <span class="github-mark" aria-hidden="true">⌘</span>
+            <span>jiemo9527/t2rss</span>
+        </a>
+        <span>版本 {{ panel_version }}</span>
     </div>
 </footer>
 <script>

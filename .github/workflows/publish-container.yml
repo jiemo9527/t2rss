@@ -47,6 +47,8 @@ jobs:
         with:
           context: ./web_panel
           file: ./web_panel/Dockerfile
+          build-args: |
+            PANEL_VERSION=${{ steps.meta.outputs.sha7 }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |

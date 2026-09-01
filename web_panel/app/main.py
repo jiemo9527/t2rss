@@ -184,6 +184,7 @@ def common_context(request: Request, title: str) -> Dict[str, Any]:
     return {
         "request": request,
         "title": title,
+        "panel_version": os.environ.get("PANEL_VERSION", "dev").strip() or "dev",
         "msg": request.query_params.get("msg", ""),
         "level": request.query_params.get("level", "info"),
         "auth_user": request.session.get("username", ""),
@@ -961,6 +962,39 @@ def build_checkpoint_rows(raw_config: Dict[str, str]) -> list[Dict[str, Any]]:
         row["fetched_30d"] = int(totals.get("d30", {}).get(cid, 0))
 
     return last_ids
+
+
+@app.post("/dashboard/sources/{channel_id}/toggle")
+async def dashboard_toggle_source(channel_id: int, request: Request):
+    """从仪表盘快速启用或暂停一个已保存来源。"""
+    auth_redirect = auth_redirect_if_needed(request)
+    if auth_redirect:
+        return auth_redirect
+
+    raw_config = config_store.load_raw_config()
+    source_items = load_source_items_from_config(raw_config)
+    target = None
+    for item in source_items:
+        if item.get("cid") == int(channel_id):
+            target = item
+            break
+
+    if target is None:
+        return redirect_with_message("/", f"未找到 CID {channel_id} 对应的已保存来源。", "warn")
+
+    target["enabled"] = not bool(target.get("enabled", False))
+    enabled_cids = sorted(
+        {item["cid"] for item in source_items if isinstance(item.get("cid"), int) and item.get("enabled")}
+    )
+    config_store.save_raw_config(
+        {
+            "CHANNEL_IDS": ",".join(str(cid) for cid in enabled_cids),
+            "CHANNEL_IDENTIFIERS": ",".join(item["source"] for item in source_items),
+            "CHANNEL_SOURCES_JSON": json.dumps(source_items, ensure_ascii=False, separators=(",", ":")),
+        }
+    )
+    action = "开启" if target["enabled"] else "暂停"
+    return redirect_with_message("/", f"已{action}来源：{target.get('source', channel_id)}。", "success")
 
 
 def extract_client_ip(request: Request) -> str:
