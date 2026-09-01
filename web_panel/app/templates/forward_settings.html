@@ -57,13 +57,19 @@
             <div class="flow-step">
                 <h3>① 已保存来源</h3>
                 {% if source_items %}
+                {# Snapshot fields intentionally live outside rows: deleting a row must keep its snapshot for server-side deletion detection. #}
+                <div class="source-snapshot-fields" aria-hidden="true">
+                    {% for item in source_items %}
+                    <input type="hidden" name="source_snapshot" value="{{ item.source }}">
+                    {% endfor %}
+                </div>
                 <table id="source-items-table">
                     <thead><tr><th>启用</th><th>来源频道</th><th>CID</th><th>状态</th><th>操作</th></tr></thead>
                     <tbody>
                     {% for item in source_items %}
                     <tr data-source="{{ item.source }}">
                         <td><input type="checkbox" name="row_enabled_source" value="{{ item.source }}" {% if item.enabled and item.cid %}checked{% endif %}></td>
-                        <td>{{ item.source }}<input type="hidden" name="source_snapshot" value="{{ item.source }}"><input type="hidden" name="row_source" value="{{ item.source }}"></td>
+                        <td>{{ item.source }}<input type="hidden" name="row_source" value="{{ item.source }}"></td>
                         <td>{{ item.cid if item.cid else "-" }}<input type="hidden" name="row_cid" value="{{ item.cid if item.cid else '' }}"></td>
                         <td>
                             {% if item.cid %}<span class="status-badge status-ok">已就绪</span>
