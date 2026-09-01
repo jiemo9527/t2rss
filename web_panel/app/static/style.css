@@ -231,6 +231,10 @@ form {
     gap: 0.8rem;
 }
 
+.field-wide {
+    grid-column: 1 / -1;
+}
+
 label {
     display: flex;
     flex-direction: column;
@@ -254,6 +258,76 @@ label {
 .field-label {
     color: var(--muted);
     font-size: 0.9rem;
+}
+
+.regex-editor {
+    margin: 0;
+    padding: 0.9rem;
+    border: 1px solid #cbd9e5;
+    border-radius: 0.65rem;
+    background: #f8fbfe;
+}
+
+.regex-editor-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+    margin-bottom: 0.65rem;
+}
+
+.regex-editor-heading .field-label {
+    display: block;
+    color: #1a4f65;
+    font-weight: 700;
+}
+
+.regex-editor-heading small {
+    display: block;
+    margin-top: 0.2rem;
+    color: #718090;
+    font-size: 0.8rem;
+}
+
+.regex-editor-badge {
+    padding: 0.16rem 0.45rem;
+    border-radius: 999px;
+    background: #dbeaf5;
+    color: #245b78;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.regex-editor-input {
+    min-height: 270px;
+    margin: 0;
+    padding: 0.8rem 0.9rem;
+    border-color: #23394a;
+    border-radius: 0.45rem;
+    background: #17232d;
+    color: #e7f2fa;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.84rem;
+    line-height: 1.6;
+    tab-size: 4;
+    white-space: pre;
+    overflow: auto;
+    resize: vertical;
+}
+
+.regex-editor-input::placeholder {
+    color: #8ca5b7;
+}
+
+.regex-editor-input:focus {
+    border-color: #4c99c4;
+    outline: 2px solid rgba(76, 153, 196, 0.25);
+}
+
+.regex-editor .field-hint {
+    display: block;
+    margin-top: 0.55rem;
 }
 
 .settings-group {

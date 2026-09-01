@@ -122,11 +122,17 @@
                     <small class="field-hint">命中后会在发送前将文本替换为空，例如：<code>#动漫</code>、<code>#剧集</code>、<code>#电影</code>。</small>
                 </div>
 
-                <label>
-                    择词正则（可选）
-                    <textarea name="TEXT_REPLACEMENT_REGEX" rows="4" placeholder="每行一个正则表达式，命中后替换为空（预留高级清洗用）">{{ config.get('TEXT_REPLACEMENT_REGEX', '') }}</textarea>
-                    <small class="field-hint">一行一条规则。示例：<code>#\S+</code>。非法正则会被自动忽略并写日志。</small>
-                </label>
+                <section class="regex-editor field-wide">
+                    <div class="regex-editor-heading">
+                        <div>
+                            <span class="field-label">择词正则（可选）</span>
+                            <small>每行一条：命中内容会在转发前删除。</small>
+                        </div>
+                        <span class="regex-editor-badge">Regex</span>
+                    </div>
+                    <textarea class="regex-editor-input" name="TEXT_REPLACEMENT_REGEX" rows="12" spellcheck="false" wrap="off" placeholder="每行一个正则表达式，例如：#\S+">{{ config.get('TEXT_REPLACEMENT_REGEX', '') }}</textarea>
+                    <small class="field-hint">支持较长规则与横向滚动。请勿在规则中使用字面 <code>\n</code>：系统会将其视为规则分隔符；需要匹配空白或换行时使用 <code>\s*</code>。</small>
+                </section>
 
                 <div class="field-block">
                     <span class="field-label">雷锋黑名单</span>
