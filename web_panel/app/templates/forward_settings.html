@@ -141,6 +141,12 @@
                     <input type="checkbox" name="DEDUPLICATION_ENABLED" {% if config.get('DEDUPLICATION_ENABLED', 'false') == 'true' %}checked{% endif %}>
                     开启夸克链接去重
                 </label>
+
+                <label class="checkbox-row">
+                    <input type="checkbox" name="DEDUPLICATION_115_ENABLED" {% if config.get('DEDUPLICATION_115_ENABLED', 'true') == 'true' %}checked{% endif %}>
+                    开启115链接去重
+                    <small class="field-hint">需同时开启上方去重开关；同一条消息同时存在夸克和 115 时优先按夸克去重。</small>
+                </label>
             </div>
             <div class="form-actions">
                 <button type="submit">保存过滤与通道配置</button>

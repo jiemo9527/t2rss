@@ -40,6 +40,7 @@
             <li><span>来源频道（启用/总）</span><strong>{{ config_preview.source_summary }}</strong></li>
             <li><span>测试模式</span><strong>{{ "已开启" if config_preview.test_mode_enabled else "已关闭" }}</strong></li>
             <li><span>去重开关</span><strong>{{ "true" if config_preview.deduplication_enabled == "true" else "false" }}</strong></li>
+            <li><span>115 链接去重</span><strong>{{ "true" if config_preview.deduplication_115_enabled == "true" else "false" }}</strong></li>
             <li><span>去重扫描条数</span><strong>{{ config_preview.deduplication_cache_size }}</strong></li>
             <li><span>RSS 订阅</span><strong>{{ "已开启" if config_preview.rss_enabled else "已关闭" }}</strong></li>
             <li><span>RSS 输出条数</span><strong>{{ config_preview.rss_item_limit }} 条</strong></li>
@@ -81,6 +82,8 @@
         <tr>
             <th>频道 ID</th>
             <th>最后处理消息 ID</th>
+            <th>近7天</th>
+            <th>近30天</th>
             <th>更新时间（上海时间）</th>
             <th>状态</th>
         </tr>
@@ -90,6 +93,8 @@
         <tr>
             <td>{{ item.channel_id }}</td>
             <td>{{ item.last_id }}</td>
+            <td>{{ item.fetched_7d if item.fetched_7d is defined else 0 }}</td>
+            <td>{{ item.fetched_30d if item.fetched_30d is defined else 0 }}</td>
             <td>{{ item.updated_at }}</td>
             <td>{{ item.status_text }}</td>
         </tr>
@@ -160,6 +165,12 @@
             var lastIdTd = document.createElement("td");
             lastIdTd.textContent = String(item.last_id || 0);
 
+            var fetched7Td = document.createElement("td");
+            fetched7Td.textContent = String(item.fetched_7d != null ? item.fetched_7d : 0);
+
+            var fetched30Td = document.createElement("td");
+            fetched30Td.textContent = String(item.fetched_30d != null ? item.fetched_30d : 0);
+
             var updatedTd = document.createElement("td");
             updatedTd.textContent = String(item.updated_at || "-");
 
@@ -168,6 +179,8 @@
 
             tr.appendChild(channelTd);
             tr.appendChild(lastIdTd);
+            tr.appendChild(fetched7Td);
+            tr.appendChild(fetched30Td);
             tr.appendChild(updatedTd);
             tr.appendChild(statusTd);
             checkpointBody.appendChild(tr);

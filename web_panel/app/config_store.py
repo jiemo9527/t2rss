@@ -21,6 +21,7 @@ FORWARDER_ENV_KEYS = [
     "TEXT_REPLACEMENT_REGEX",
     "USER_ID_BLACKLIST",
     "DEDUPLICATION_ENABLED",
+    "DEDUPLICATION_115_ENABLED",
     "DEDUPLICATION_CACHE_SIZE",
 ]
 
@@ -39,6 +40,7 @@ PANEL_ENV_KEYS = [
     "PANEL_RSS_ENABLED",
     "PANEL_RSS_TOKEN",
     "PANEL_RSS_ITEM_LIMIT",
+    "PANEL_HISTORY_RETENTION_DAYS",
 ]
 
 ALL_ENV_KEYS = FORWARDER_ENV_KEYS + PANEL_ENV_KEYS
@@ -57,6 +59,7 @@ DEFAULT_ENV_VALUES = {
     "TEXT_REPLACEMENT_REGEX": "",
     "USER_ID_BLACKLIST": "",
     "DEDUPLICATION_ENABLED": "false",
+    "DEDUPLICATION_115_ENABLED": "true",
     "DEDUPLICATION_CACHE_SIZE": "200",
     "PANEL_AUTO_RUN_ENABLED": "false",
     "PANEL_AUTO_RUN_INTERVAL_MINUTES": "15",
@@ -72,6 +75,7 @@ DEFAULT_ENV_VALUES = {
     "PANEL_RSS_ENABLED": "true",
     "PANEL_RSS_TOKEN": "",
     "PANEL_RSS_ITEM_LIMIT": "500",
+    "PANEL_HISTORY_RETENTION_DAYS": "30",
 }
 
 MULTILINE_ESCAPED_ENV_KEYS = {
@@ -94,6 +98,7 @@ class ForwarderConfig:
     text_replacement_regex: str
     user_id_blacklist: Set[int]
     deduplication_enabled: bool
+    deduplication_115_enabled: bool
     deduplication_cache_size: int
 
 
@@ -306,6 +311,7 @@ class ConfigStore:
             text_replacement_regex=raw.get("TEXT_REPLACEMENT_REGEX", "").strip(),
             user_id_blacklist=user_id_blacklist,
             deduplication_enabled=parse_bool(raw.get("DEDUPLICATION_ENABLED", "false"), False),
+            deduplication_115_enabled=parse_bool(raw.get("DEDUPLICATION_115_ENABLED", "true"), True),
             deduplication_cache_size=parse_positive_int(
                 raw.get("DEDUPLICATION_CACHE_SIZE", "200"),
                 "DEDUPLICATION_CACHE_SIZE",

@@ -1,9 +1,10 @@
 import json
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .time_utils import normalize_to_shanghai_iso
+from .time_utils import SHANGHAI_TZ, normalize_to_shanghai_iso
 
 
 class RunHistoryStore:
@@ -64,6 +65,73 @@ class RunHistoryStore:
                 ),
             )
             connection.commit()
+
+    def prune_old_records(self, retention_days: int = 30) -> int:
+        """删除超过保留期的运行记录，返回删除条数。retention_days<=0 表示不清理。"""
+        if retention_days <= 0:
+            return 0
+        cutoff = (
+            datetime.now(SHANGHAI_TZ) - timedelta(days=int(retention_days))
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.execute(
+                "DELETE FROM run_history WHERE started_at < ?",
+                (cutoff,),
+            )
+            connection.commit()
+            return cursor.rowcount
+
+    def vacuum(self) -> None:
+        """回收数据库空间（在批量删除后调用）。"""
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("VACUUM")
+
+    def per_channel_fetched_totals(self, windows_days: Dict[str, int]) -> Dict[str, Dict[int, int]]:
+        """按时间窗口聚合每个来源频道的抓取量（stats_json.per_channel_fetched）。
+
+        返回 {window_name: {channel_id: fetched_total}}。用于仪表盘的来源产出统计（D1）。
+        以 Python 累加，避免依赖 SQLite 的 JSON 扩展。
+        """
+        result: Dict[str, Dict[int, int]] = {name: {} for name in windows_days}
+        if not windows_days:
+            return result
+
+        max_days = max(windows_days.values())
+        cutoff = (datetime.now(SHANGHAI_TZ) - timedelta(days=int(max_days))).strftime("%Y-%m-%d %H:%M:%S")
+        cutoffs = {
+            name: (datetime.now(SHANGHAI_TZ) - timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S")
+            for name, days in windows_days.items()
+        }
+
+        with sqlite3.connect(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT started_at, stats_json FROM run_history WHERE started_at >= ? AND stats_json IS NOT NULL",
+                (cutoff,),
+            ).fetchall()
+
+        for started_at, stats_json in rows:
+            if not stats_json:
+                continue
+            try:
+                payload = json.loads(stats_json)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            per_channel = payload.get("per_channel_fetched") or {}
+            if not isinstance(per_channel, dict):
+                continue
+            for name, cut in cutoffs.items():
+                if started_at < cut:
+                    continue
+                bucket = result[name]
+                for cid_str, count in per_channel.items():
+                    try:
+                        cid_int = int(cid_str)
+                        count_int = int(count or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if count_int:
+                        bucket[cid_int] = bucket.get(cid_int, 0) + count_int
+        return result
 
     def list_records(self, limit: int = 30) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as connection:

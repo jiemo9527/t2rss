@@ -30,6 +30,12 @@
                     <input type="number" min="1" name="PANEL_AUTO_RUN_INTERVAL_MINUTES" value="{{ config.get('PANEL_AUTO_RUN_INTERVAL_MINUTES', '15') }}">
                     <small class="field-hint">自动运行间隔（分钟）。</small>
                 </label>
+
+                <label>
+                    PANEL_HISTORY_RETENTION_DAYS
+                    <input type="number" min="0" name="PANEL_HISTORY_RETENTION_DAYS" value="{{ config.get('PANEL_HISTORY_RETENTION_DAYS', '30') }}">
+                    <small class="field-hint">运行历史保留天数，启动时自动清理更早记录并回收数据库空间；0 表示不清理。</small>
+                </label>
             </div>
         </div>
 

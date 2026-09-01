@@ -1,10 +1,16 @@
 services:
   t2rss-web:
     build: .
-    image: t2rss-web-panel:latest
+    image: ghcr.io/jiemo9527/t2rss:${T2RSS_IMAGE_TAG:-latest}
     container_name: t2rss-web-panel
     restart: unless-stopped
     ports:
-      - "8080:8000"
+      - "127.0.0.1:8877:8000"
     volumes:
       - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status==200 else sys.exit(1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

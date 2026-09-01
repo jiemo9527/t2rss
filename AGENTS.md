@@ -77,6 +77,7 @@ Forwarding-related keys:
 - `KEYWORD_BLACKLIST`
 - `USER_ID_BLACKLIST`
 - `DEDUPLICATION_ENABLED`
+- `DEDUPLICATION_115_ENABLED`
 - `DEDUPLICATION_CACHE_SIZE`
 
 Panel/security/scheduler keys:
@@ -146,12 +147,16 @@ Panel/security/scheduler keys:
 
 ## 8) Dedup + Bot Link Expansion Rules
 
-Current dedup key target: first matching `https://pan.quark.cn/s/<token>`.
+Current dedup key target priority:
+
+- Quark wins if the message contains any `https://pan.quark.cn/s/<token>` in text, blue hyperlink entities, button URLs, or a bot-resolved URL.
+- 115 is used only when `DEDUPLICATION_115_ENABLED=true` and no Quark link exists: `https://115cdn.com/s/<token>` (ignore query strings such as `password=...` and access-code fragments such as `#访问码：...`) or `https://hdhive.com/resource/115/<token>`.
 
 When `DEDUPLICATION_ENABLED=true`:
 
 - Destination pre-clean dedup runs on last `DEDUPLICATION_CACHE_SIZE` destination messages.
 - Intra-run dedup and destination-history dedup both apply.
+- Dedup link extraction checks message text, `MessageEntityTextUrl` blue hyperlinks, and button URLs.
 - For messages containing trigger phrase `点击获取夸克链接`:
   - System extracts bot jump links from text/entities/buttons (`t.me` or `tg://resolve`)
   - Sends `/start` (with `start`/`startapp` payload if present) in a conversation

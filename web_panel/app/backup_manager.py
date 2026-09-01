@@ -1,5 +1,7 @@
 from pathlib import Path
 import shutil
+import sqlite3
+import tempfile
 import uuid
 from typing import Any, Dict, List, Optional
 import zipfile
@@ -29,40 +31,77 @@ class BackupManager:
             )
         return backups
 
+    def _make_slim_db_copy(self, db_path: Path) -> Optional[Path]:
+        """生成一份剔除 run_history（体积大头）的临时数据库副本，用于瘦身备份。
+
+        保留 channel_last_id/login_guard 等关键表；失败时返回 None，回退为原库。
+        """
+        try:
+            fd, tmp_name = tempfile.mkstemp(prefix="t2rss_slimdb_", suffix=".db")
+            import os as _os
+
+            _os.close(fd)
+            tmp_path = Path(tmp_name)
+            source_connection = sqlite3.connect(db_path)
+            target_connection = sqlite3.connect(tmp_path)
+            try:
+                # SQLite 在线备份可得到包含 WAL 已提交内容的一致快照。
+                source_connection.backup(target_connection)
+            finally:
+                target_connection.close()
+                source_connection.close()
+
+            connection = sqlite3.connect(tmp_path)
+            try:
+                has_run_history = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='run_history'"
+                ).fetchone()
+                if has_run_history:
+                    connection.execute("DELETE FROM run_history")
+                    connection.commit()
+                connection.execute("VACUUM")
+            finally:
+                connection.close()
+            return tmp_path
+        except Exception:
+            return None
+
+    def _write_archive(self, backup_file: Path) -> Path:
+        slim_db = self._make_slim_db_copy(self.data_dir / "panel.db")
+        db_abs = (self.data_dir / "panel.db").resolve()
+        try:
+            with zipfile.ZipFile(backup_file, "w", zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(self.data_dir.rglob("*")):
+                    if path.is_dir():
+                        continue
+                    if path == backup_file:
+                        continue
+                    if self.backups_dir in path.parents:
+                        continue
+                    if slim_db is not None:
+                        if path.resolve() == db_abs:
+                            archive.write(slim_db, arcname="panel.db")
+                            continue
+                        if path.name in {"panel.db-wal", "panel.db-shm", "panel.db-journal"}:
+                            continue
+                    archive.write(path, arcname=str(path.relative_to(self.data_dir)))
+        finally:
+            if slim_db is not None:
+                slim_db.unlink(missing_ok=True)
+        return backup_file
+
     def create_backup(self) -> Path:
         self.ensure_directory()
         timestamp = now_shanghai().strftime("%Y%m%d_%H%M%S")
         backup_file = self.backups_dir / f"t2rss_backup_{timestamp}.zip"
-
-        with zipfile.ZipFile(backup_file, "w", zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(self.data_dir.rglob("*")):
-                if path.is_dir():
-                    continue
-                if path == backup_file:
-                    continue
-                if self.backups_dir in path.parents:
-                    continue
-                archive.write(path, arcname=str(path.relative_to(self.data_dir)))
-
-        return backup_file
+        return self._write_archive(backup_file)
 
     def create_backup_with_prefix(self, prefix: str) -> Path:
         self.ensure_directory()
         safe_prefix = "".join(ch for ch in str(prefix) if ch.isalnum() or ch in {"_", "-"}).strip() or "backup"
         timestamp = now_shanghai().strftime("%Y%m%d_%H%M%S")
         backup_file = self.backups_dir / f"{safe_prefix}_{timestamp}.zip"
-
-        with zipfile.ZipFile(backup_file, "w", zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(self.data_dir.rglob("*")):
-                if path.is_dir():
-                    continue
-                if path == backup_file:
-                    continue
-                if self.backups_dir in path.parents:
-                    continue
-                archive.write(path, arcname=str(path.relative_to(self.data_dir)))
-
-        return backup_file
+        return self._write_archive(backup_file)
 
     def resolve_backup(self, backup_name: str) -> Optional[Path]:
         if not backup_name or "/" in backup_name or "\\" in backup_name:

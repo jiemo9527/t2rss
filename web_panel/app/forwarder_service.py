@@ -16,7 +16,9 @@ from .config_store import ConfigStore, ForwarderConfig
 from .time_utils import now_shanghai_iso
 
 
-QUARK_LINK_PATTERN = re.compile(r"https://pan\.quark\.cn/s/[a-zA-Z0-9]+")
+QUARK_LINK_PATTERN = re.compile(r"https?://pan\.quark\.cn/s/[a-zA-Z0-9]+", re.IGNORECASE)
+CLOUD115_LINK_PATTERN = re.compile(r"https?://(?:www\.)?115cdn\.com/s/[a-zA-Z0-9]+", re.IGNORECASE)
+HDHIVE115_LINK_PATTERN = re.compile(r"https?://(?:www\.)?hdhive\.com/resource/115/[a-zA-Z0-9]+", re.IGNORECASE)
 URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 BOT_TRIGGER_PHRASE = "点击获取夸克链接"
 SEND_RETRY_MAX_ATTEMPTS = 3
@@ -51,20 +53,102 @@ def _is_quark_jump_link(url: str) -> bool:
     return False
 
 
-def extract_quark_link(text: Optional[str]) -> Optional[str]:
-    if not text:
+def _normalize_quark_link(raw_url: Optional[str]) -> Optional[str]:
+    match = QUARK_LINK_PATTERN.search(str(raw_url or ""))
+    if not match:
         return None
-    match = QUARK_LINK_PATTERN.search(text)
-    return match.group(0) if match else None
+
+    parsed = urlparse(match.group(0))
+    token = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+    if not token:
+        return None
+    return f"https://pan.quark.cn/s/{token}"
 
 
-def _extract_message_quark_link(message, resolved_url: Optional[str] = None) -> Optional[str]:
-    message_text = getattr(message, "text", None) or getattr(message, "caption", None)
-    link = extract_quark_link(message_text)
-    if link:
-        return link
+def _normalize_115_link(raw_url: Optional[str]) -> Optional[str]:
+    content = str(raw_url or "")
+    candidates: List[tuple[int, str]] = []
+
+    for match in CLOUD115_LINK_PATTERN.finditer(content):
+        parsed = urlparse(match.group(0))
+        token = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+        if token:
+            candidates.append((match.start(), f"https://115cdn.com/s/{token}"))
+
+    for match in HDHIVE115_LINK_PATTERN.finditer(content):
+        parsed = urlparse(match.group(0))
+        token = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+        if token:
+            candidates.append((match.start(), f"https://hdhive.com/resource/115/{token}"))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def extract_quark_link(text: Optional[str]) -> Optional[str]:
+    return _normalize_quark_link(text)
+
+
+def extract_115_link(text: Optional[str]) -> Optional[str]:
+    return _normalize_115_link(text)
+
+
+def extract_dedup_link(text: Optional[str], include_115: bool = True) -> Optional[str]:
+    content = str(text or "")
+    if not content:
+        return None
+
+    quark_link = extract_quark_link(content)
+    if quark_link:
+        return quark_link
+    if not include_115:
+        return None
+    return extract_115_link(content)
+
+
+def _extract_message_dedup_link(
+    message,
+    resolved_url: Optional[str] = None,
+    include_115: bool = True,
+) -> Optional[str]:
+    message_text = (
+        getattr(message, "raw_text", None)
+        or getattr(message, "message", None)
+        or getattr(message, "text", None)
+        or getattr(message, "caption", None)
+    )
+
+    link_sources: List[str] = []
+    if message_text:
+        link_sources.append(str(message_text))
     if resolved_url:
-        return extract_quark_link(resolved_url)
+        link_sources.append(str(resolved_url))
+
+    entities = getattr(message, "entities", None) or []
+    for entity in entities:
+        if not isinstance(entity, MessageEntityTextUrl):
+            continue
+        entity_url = str(getattr(entity, "url", "") or "")
+        if entity_url:
+            link_sources.append(entity_url)
+
+    for button_url in _extract_button_urls(message):
+        if button_url:
+            link_sources.append(button_url)
+
+    for source in link_sources:
+        link = extract_quark_link(source)
+        if link:
+            return link
+
+    if include_115:
+        for source in link_sources:
+            link = extract_115_link(source)
+            if link:
+                return link
+
     return None
 
 
@@ -613,22 +697,46 @@ async def resolve_identifiers_preview(config_store: ConfigStore, identifiers: Li
 
             try:
                 entity = await client.get_entity(entity_to_get)
+                latest_message_id = 0
+                try:
+                    latest_messages = await client.get_messages(entity, limit=1)
+                    if latest_messages:
+                        latest_message_id = int(getattr(latest_messages[0], "id", 0) or 0)
+                except Exception as exc:
+                    logger.warning("获取频道 '%s' 最新消息 ID 失败：%s", identifier, exc)
                 results.append(
                     {
                         "identifier": identifier,
                         "ok": True,
                         "channel_id": entity.id,
+                        "latest_message_id": latest_message_id,
                         "error": "",
                     }
                 )
             except Exception as exc:
                 logger.warning("预解析失败 '%s': %s", identifier, exc)
+                error_text = str(exc)
+                friendly_error = error_text
+                is_invite_link = identifier.startswith("+") or "/+" in identifier or "joinchat" in identifier
+                lowered = error_text.lower()
+                if is_invite_link and (
+                    "invitehash" in lowered
+                    or "invite" in lowered
+                    or "could not find" in lowered
+                    or "no user has" in lowered
+                    or "cannot find any entity" in lowered
+                ):
+                    friendly_error = (
+                        "私有频道邀请链接无法直接解析：请先用当前会话账号点击该邀请链接加入频道，"
+                        "加入后再回到本页重新解析。（原始错误：" + error_text + "）"
+                    )
                 results.append(
                     {
                         "identifier": identifier,
                         "ok": False,
                         "channel_id": "",
-                        "error": str(exc),
+                        "latest_message_id": 0,
+                        "error": friendly_error,
                     }
                 )
     return results
@@ -652,11 +760,7 @@ async def _cleanup_and_get_historical_links(
         if isinstance(message, MessageService):
             continue
 
-        message_text = getattr(message, "text", None) or getattr(message, "caption", None)
-        if not message_text:
-            continue
-
-        link = extract_quark_link(message_text)
+        link = _extract_message_dedup_link(message, include_115=config.deduplication_115_enabled)
         if link:
             link_groups[link].append(message)
 
@@ -827,6 +931,7 @@ def _build_empty_stats() -> Dict[str, Any]:
         "skipped_intra_run_link": 0,
         "test_mode_enabled": False,
         "dedup_enabled": False,
+        "dedup_115_enabled": True,
         "dedup_cache_size": 0,
         "destination_duplicates_detected": 0,
         "destination_duplicates_deleted": 0,
@@ -861,6 +966,7 @@ async def run_forwarder_once(
 
         stats["test_mode_enabled"] = test_mode_enabled
         stats["dedup_enabled"] = config.deduplication_enabled
+        stats["dedup_115_enabled"] = config.deduplication_115_enabled
         stats["dedup_cache_size"] = config.deduplication_cache_size
         text_replacement_regex_rules = _compile_text_replacement_regex(config.text_replacement_regex, logger)
 
@@ -986,16 +1092,8 @@ async def run_forwarder_once(
                     if isinstance(message, MessageService):
                         continue
 
-                    message_text = getattr(message, "text", None) or getattr(message, "caption", None)
-                    if not message_text:
-                        pre_resolved = pre_resolved_url_by_message_obj.get(id(message))
-                        link = _extract_message_quark_link(message, pre_resolved)
-                        if not link:
-                            messages_without_link_stage1.append(message)
-                            continue
-                    else:
-                        pre_resolved = pre_resolved_url_by_message_obj.get(id(message))
-                        link = _extract_message_quark_link(message, pre_resolved)
+                    pre_resolved = pre_resolved_url_by_message_obj.get(id(message))
+                    link = _extract_message_dedup_link(message, pre_resolved, config.deduplication_115_enabled)
                     if not link:
                         messages_without_link_stage1.append(message)
                         continue
@@ -1021,7 +1119,7 @@ async def run_forwarder_once(
                         continue
 
                     pre_resolved = pre_resolved_url_by_message_obj.get(id(message))
-                    link = _extract_message_quark_link(message, pre_resolved)
+                    link = _extract_message_dedup_link(message, pre_resolved, config.deduplication_115_enabled)
                     if link and link in historical_links:
                         stats["skipped_historical_link"] += 1
                     else:

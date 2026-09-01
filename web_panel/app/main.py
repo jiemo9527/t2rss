@@ -79,8 +79,8 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 RSS_REFRESH_TIMEOUT_SECONDS = 20
 RSS_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 300
-RSS_IMAGE_DISPLAY_WIDTH = 720
-RSS_IMAGE_DISPLAY_MAX_HEIGHT = 960
+RSS_IMAGE_DISPLAY_WIDTH = 450
+RSS_IMAGE_DISPLAY_MAX_HEIGHT = 450
 RSS_IMAGE_JPEG_QUALITY = 85
 RSS_IMAGE_CACHE_VERSION = f"img{RSS_IMAGE_DISPLAY_WIDTH}x{RSS_IMAGE_DISPLAY_MAX_HEIGHT}"
 RSS_HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -116,12 +116,63 @@ async def on_startup() -> None:
     migrated = checkpoint_store.migrate_from_files(config_store.last_id_dir)
     if migrated > 0:
         logger.info("已将旧版 last_id 文本记录迁移到数据库，共 %s 条。", migrated)
+    _prune_run_history_on_startup()
+    _reconcile_source_config_on_startup()
     await runner.start()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await runner.stop()
+
+
+def _prune_run_history_on_startup() -> None:
+    """按保留期清理运行历史并回收数据库空间（A1）。"""
+    raw = config_store.load_raw_config()
+    try:
+        retention_days = int(str(raw.get("PANEL_HISTORY_RETENTION_DAYS", "30")).strip() or "30")
+    except ValueError:
+        retention_days = 30
+    if retention_days <= 0:
+        return
+    try:
+        deleted = history_store.prune_old_records(retention_days)
+        if deleted > 0:
+            history_store.vacuum()
+            logger.info("已清理 %s 天前的运行历史 %s 条并回收数据库空间。", retention_days, deleted)
+    except Exception:
+        logger.exception("清理运行历史时出错，已跳过。")
+
+
+def _reconcile_source_config_on_startup() -> None:
+    """以 CHANNEL_SOURCES_JSON 为准，校验并重新派生 CHANNEL_IDS/CHANNEL_IDENTIFIERS（B4）。"""
+    raw = config_store.load_raw_config()
+    source_items = parse_channel_sources(raw.get("CHANNEL_SOURCES_JSON", "[]"))
+    if not source_items:
+        return
+
+    derived_ids = sorted(
+        {item["cid"] for item in source_items if isinstance(item.get("cid"), int) and item.get("enabled")}
+    )
+    derived_ids_text = ",".join(str(cid) for cid in derived_ids)
+    derived_identifiers_text = ",".join(item["source"] for item in source_items)
+
+    current_ids_text = str(raw.get("CHANNEL_IDS", "")).strip()
+    current_identifiers_text = str(raw.get("CHANNEL_IDENTIFIERS", "")).strip()
+
+    updates: Dict[str, str] = {}
+    if current_ids_text != derived_ids_text:
+        updates["CHANNEL_IDS"] = derived_ids_text
+    if current_identifiers_text != derived_identifiers_text:
+        updates["CHANNEL_IDENTIFIERS"] = derived_identifiers_text
+
+    if updates:
+        config_store.save_raw_config(updates)
+        logger.info(
+            "启动一致性校验：已按来源列表重新派生 %s（启用源 %s 个）。",
+            "、".join(updates.keys()),
+            len(derived_ids),
+        )
 
 
 def redirect_with_message(path: str, message: str, level: str = "info") -> RedirectResponse:
@@ -161,12 +212,20 @@ def clear_panel_log(log_file: Path) -> None:
     log_file.write_text("", encoding="utf-8")
 
 
-def ensure_channel_checkpoints(channel_ids: list[int]) -> int:
-    """为新频道自动补齐断点记录，默认 last_id=0。"""
+def ensure_channel_checkpoints(
+    channel_ids: list[int],
+    default_last_ids: Dict[int, int] | None = None,
+) -> int:
+    """为新频道自动补齐断点记录。
+
+    默认从该频道“当前最新消息”起（default_last_ids 提供），使新增来源只转发加入后的新内容；
+    未提供时回退为 0。已存在的断点不覆盖，用户仍可在界面手动改小以补历史。
+    """
+    default_last_ids = default_last_ids or {}
     created_count = 0
     for channel_id in sorted(set(channel_ids)):
         if checkpoint_store.get_record(channel_id) is None:
-            checkpoint_store.set_last_id(channel_id, 0)
+            checkpoint_store.set_last_id(channel_id, int(default_last_ids.get(channel_id, 0)))
             created_count += 1
     return created_count
 
@@ -890,6 +949,13 @@ def build_checkpoint_rows(raw_config: Dict[str, str]) -> list[Dict[str, Any]]:
         resolved_cids_all = set(fallback_channel_ids)
 
     last_ids = checkpoint_store.list_last_ids()
+
+    # D1: 附加每源近 7/30 天抓取量统计
+    try:
+        totals = history_store.per_channel_fetched_totals({"d7": 7, "d30": 30})
+    except Exception:
+        totals = {"d7": {}, "d30": {}}
+
     for row in last_ids:
         cid = int(row.get("channel_id", 0))
         if cid in resolved_cids_enabled:
@@ -898,6 +964,8 @@ def build_checkpoint_rows(raw_config: Dict[str, str]) -> list[Dict[str, Any]]:
             row["status_text"] = "停用"
         else:
             row["status_text"] = "停用"
+        row["fetched_7d"] = int(totals.get("d7", {}).get(cid, 0))
+        row["fetched_30d"] = int(totals.get("d30", {}).get(cid, 0))
 
     return last_ids
 
@@ -1150,6 +1218,7 @@ async def dashboard(request: Request):
                 "user_id_blacklist_text": "，".join(user_id_blacklist),
                 "user_id_blacklist_count": len(user_id_blacklist),
                 "deduplication_enabled": raw_config.get("DEDUPLICATION_ENABLED", "false"),
+                "deduplication_115_enabled": raw_config.get("DEDUPLICATION_115_ENABLED", "true"),
                 "deduplication_cache_size": raw_config.get("DEDUPLICATION_CACHE_SIZE", "200"),
                 "auto_run_enabled": panel_settings.auto_run_enabled,
                 "auto_run_interval_minutes": panel_settings.auto_run_interval_minutes,
@@ -1387,15 +1456,27 @@ async def forward_settings_save(request: Request):
 
     all_resolved_cids = sorted({item["cid"] for item in source_items if isinstance(item.get("cid"), int)})
 
+    # B3: 检测重复来源（同一 cid 对应多行），提示用户避免重复转发。
+    cid_counts: Dict[int, int] = {}
+    for item in source_items:
+        cid_val = item.get("cid")
+        if isinstance(cid_val, int):
+            cid_counts[cid_val] = cid_counts.get(cid_val, 0) + 1
+    duplicate_cids = sorted(cid for cid, count in cid_counts.items() if count > 1)
+    duplicate_hint = ""
+    if duplicate_cids:
+        duplicate_hint = "；检测到重复来源频道 ID：" + "、".join(str(cid) for cid in duplicate_cids) + "（建议删除重复行）"
+
     keys = [
         "KEYWORD_BLACKLIST",
         "TEXT_REPLACEMENT_TERMS",
         "TEXT_REPLACEMENT_REGEX",
         "USER_ID_BLACKLIST",
         "DEDUPLICATION_ENABLED",
+        "DEDUPLICATION_115_ENABLED",
         "DEDUPLICATION_CACHE_SIZE",
     ]
-    payload = collect_form_payload(form, current, keys, bool_keys={"DEDUPLICATION_ENABLED"})
+    payload = collect_form_payload(form, current, keys, bool_keys={"DEDUPLICATION_ENABLED", "DEDUPLICATION_115_ENABLED"})
 
     payload["DESTINATION_CHANNEL"] = destination_channel
     payload["CHANNEL_IDS"] = ",".join(str(cid) for cid in enabled_cids)
@@ -1409,21 +1490,22 @@ async def forward_settings_save(request: Request):
     if not source_items:
         return redirect_with_message("/forward-settings", "已保存：来源频道列表为空。", "success")
 
+    result_level = "warn" if duplicate_cids else "success"
     if created_count > 0:
         return redirect_with_message(
             "/forward-settings",
             (
                 f"已保存：启用来源 {len(enabled_cids)} 个，关闭来源 {disabled_count} 个，"
-                f"自动新增断点 {created_count} 条。"
+                f"自动新增断点 {created_count} 条。{duplicate_hint}"
             ),
-            "success",
+            result_level,
         )
     if len(enabled_cids) == 0:
-        return redirect_with_message("/forward-settings", "已保存：当前没有启用的来源频道。", "warn")
+        return redirect_with_message("/forward-settings", f"已保存：当前没有启用的来源频道。{duplicate_hint}", "warn")
     return redirect_with_message(
         "/forward-settings",
-        f"已保存：启用来源 {len(enabled_cids)} 个，关闭来源 {disabled_count} 个。",
-        "success",
+        f"已保存：启用来源 {len(enabled_cids)} 个，关闭来源 {disabled_count} 个。{duplicate_hint}",
+        result_level,
     )
 
 
@@ -1505,14 +1587,24 @@ async def resolve_identifiers(request: Request):
             )
 
         resolved_cids = sorted({item["cid"] for item in source_items if isinstance(item.get("cid"), int)})
-        created_count = ensure_channel_checkpoints(resolved_cids)
+        latest_id_map: Dict[int, int] = {}
+        for source in identifiers:
+            resolved = resolved_map.get(source, {})
+            channel_id_value = resolved.get("channel_id")
+            latest_message_id = int(resolved.get("latest_message_id", 0) or 0)
+            if channel_id_value not in {None, ""} and latest_message_id > 0:
+                try:
+                    latest_id_map[int(str(channel_id_value).strip())] = latest_message_id
+                except ValueError:
+                    continue
+        created_count = ensure_channel_checkpoints(resolved_cids, latest_id_map)
 
         context = build_forward_settings_context(request, raw_config, source_items=source_items, override_destination=destination_channel)
         context["sources_input"] = "\n".join(identifiers)
         if created_count > 0:
             context["msg"] = (
-                f"来源频道解析完成，已自动创建 {created_count} 条断点记录（默认 last_id=0）。"
-                "请确认启用状态后保存通道配置。"
+                f"来源频道解析完成，已自动创建 {created_count} 条断点记录（默认从当前最新消息开始，"
+                "如需补历史请在下方断点表手动改小 last_id）。请确认启用状态后保存通道配置。"
             )
         else:
             context["msg"] = "来源频道解析完成，断点记录已就绪。请确认启用状态后保存通道配置。"
@@ -1631,6 +1723,7 @@ async def plan_backup_save(request: Request):
         "PANEL_TOTAL_TIMEOUT_SECONDS",
         "PANEL_AUTO_RUN_ENABLED",
         "PANEL_AUTO_RUN_INTERVAL_MINUTES",
+        "PANEL_HISTORY_RETENTION_DAYS",
     ]
     payload = collect_form_payload(
         form,
