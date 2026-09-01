@@ -16,53 +16,62 @@ git checkout cli
 
 ## 2. 启动服务
 
-### 方式 A：本地构建（仓库源码）
+### 方式 A：GHCR 镜像部署（推荐）
 
-在仓库根目录执行：
+已弃用 Docker Hub，公开镜像发布到 GitHub Container Registry：
+
+```text
+ghcr.io/jiemo9527/t2rss:<tag>
+```
+
+镜像同时提供 `linux/amd64` 与 `linux/arm64`；服务器可匿名拉取，无需 `docker login`。推荐固定到提交短 SHA（例如 `704f0f5`），避免 `latest` 自动变化带来不可预期升级。
+
+```bash
+git clone https://github.com/jiemo9527/t2rss.git /opt/t2rss
+cd /opt/t2rss/web_panel
+
+# 首次部署：固定版本；也可替换为 latest
+export T2RSS_IMAGE_TAG=704f0f5
+docker compose pull
+docker compose up -d
+
+# 访问与健康检查（默认仅监听本机，适合由 Nginx/Caddy 反代）
+curl http://127.0.0.1:8877/health
+docker compose ps
+```
+
+`data/` 是持久化目录，包含配置、Telegram 会话、断点、日志和备份；升级镜像不会删除它。
+
+### 方式 B：本地构建（仓库源码）
+
+适合开发或验证未发布改动：
 
 ```bash
 cd web_panel
 docker compose up -d --build
+curl http://127.0.0.1:8877/health
 ```
 
-默认访问地址：`http://127.0.0.1:8080`
+当前 compose 默认绑定 `127.0.0.1:8877`，不会直接暴露到公网。如需从其他主机访问，请配置反向代理；不要直接将管理面板端口暴露到公网。
 
-健康检查：
+### 更新与回滚
 
 ```bash
-curl http://127.0.0.1:8080/health
+cd /opt/t2rss/web_panel
+
+# 更新到指定已发布版本
+export T2RSS_IMAGE_TAG=<新的短 SHA>
+docker compose pull
+docker compose up -d
+curl http://127.0.0.1:8877/health
+
+# 回滚：把 tag 改回上一个已验证版本，再执行相同命令
+export T2RSS_IMAGE_TAG=<上一个短 SHA>
+docker compose pull
+docker compose up -d
 ```
 
-### 方式 B：Docker Hub 镜像（推荐快速部署）
-
-当前公开镜像：
-
-- `wanxve0000/t2rss-web-panel:latest`
-- `wanxve0000/t2rss-web-panel:20260414`
-
-```bash
-docker pull wanxve0000/t2rss-web-panel:latest
-mkdir -p /opt/t2rss-web-panel/data
-docker run -d --name t2rss-web-panel \
-  --restart unless-stopped \
-  -p 8080:8000 \
-  -v /opt/t2rss-web-panel/data:/app/data \
-  wanxve0000/t2rss-web-panel:latest
-```
-
-也可以把 `web_panel/docker-compose.yml` 改成直接用镜像：
-
-```yaml
-services:
-  t2rss-web:
-    image: wanxve0000/t2rss-web-panel:latest
-    container_name: t2rss-web-panel
-    restart: unless-stopped
-    ports:
-      - "8080:8000"
-    volumes:
-      - ./data:/app/data
-```
+GitHub Actions 会在 `main` 分支的 `web_panel/` 改动推送后自动构建并发布 `latest` 和对应提交短 SHA 标签。
 
 ## 3. 首次登录
 

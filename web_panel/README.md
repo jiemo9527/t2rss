@@ -30,8 +30,8 @@
 - 自动运行：支持后台定时自动触发。
 - 管理员安全登录：默认开启登录校验与防爆破锁定。
 - 断点管理面板：支持 `last_id` 的创建、查看、修改、删除。
-- 保存 `CHANNEL_IDS` 时自动补齐断点：新 CID 会自动写入数据库断点，默认 `last_id=0`。
-- CID 必经流程：新增频道前必须先解析 CID，再写入 `CHANNEL_IDS`。
+- 新来源经解析后默认将断点设为该频道当前最新消息：只接收加入后的新内容；如需补历史，可在断点管理中手动调小 `last_id`。
+- CID 必经流程：新增频道前必须先解析 CID，再写入 `CHANNEL_IDS`。私有邀请链接解析失败时，先用当前 Telegram 会话账号加入频道后再重新解析。
 - 测试模式开关：开启后仅模拟流程，不真实转发，不更新断点，不删除目标重复消息。
 - 运行总超时：支持 `PANEL_TOTAL_TIMEOUT_SECONDS`（默认 600 秒），超时自动中止。
 - 首页强制中止：任务运行中可一键强制中止当前转发任务。
@@ -67,36 +67,60 @@
 - `data/state/rss_media/`：RSS 条目主图缓存目录。
 - `data/backups/*.zip`：备份压缩包。
 
-## Docker 启动
+## Docker 部署
+
+### GHCR 镜像部署（推荐）
+
+已弃用 Docker Hub。公开镜像由 GitHub Actions 自动发布至：
+
+```text
+ghcr.io/jiemo9527/t2rss:<tag>
+```
+
+镜像支持 `linux/amd64` 和 `linux/arm64`，可匿名拉取。推荐使用已验证的提交短 SHA 固定版本，例如 `704f0f5`；`latest` 适合希望自动跟进主线的测试环境。
 
 ```bash
+# 在仓库内：compose 已包含镜像、持久化目录和 healthcheck
+cd web_panel
+export T2RSS_IMAGE_TAG=704f0f5
+docker compose pull
+docker compose up -d
+
+# 默认只监听本机，建议用 Nginx/Caddy 反代
+curl http://127.0.0.1:8877/health
+docker compose ps
+```
+
+`./data` 挂载到容器 `/app/data`，其中的配置、Telegram 会话、SQLite 断点和备份会跨镜像更新保留。
+
+### 从源码本地构建
+
+适合开发或运行未发布的本地改动：
+
+```bash
+cd web_panel
 docker compose up -d --build
+curl http://127.0.0.1:8877/health
 ```
 
-打开：`http://localhost:8080`
-
-## Docker Hub 镜像启动（免本地构建）
-
-镜像地址：
-
-- `wanxve0000/t2rss-web-panel:latest`
-- `wanxve0000/t2rss-web-panel:20260414`
+### 更新与回滚
 
 ```bash
-docker pull wanxve0000/t2rss-web-panel:latest
-mkdir -p ./data
-docker run -d --name t2rss-web-panel \
-  --restart unless-stopped \
-  -p 8080:8000 \
-  -v $(pwd)/data:/app/data \
-  wanxve0000/t2rss-web-panel:latest
+cd /root/t2rss/web_panel
+
+# 更新到指定构建版本
+export T2RSS_IMAGE_TAG=<新的短 SHA>
+docker compose pull
+docker compose up -d
+curl http://127.0.0.1:8877/health
+
+# 回滚：把版本改回先前已验证的短 SHA，再执行相同命令
+export T2RSS_IMAGE_TAG=<上一个短 SHA>
+docker compose pull
+docker compose up -d
 ```
 
-也可将 `docker-compose.yml` 的 `build: .` 改为：
-
-```yaml
-image: wanxve0000/t2rss-web-panel:latest
-```
+不要直接将 `8877` 暴露至公网；请使用带 HTTPS 和访问控制的反向代理。
 
 ## systemd 自启服务（/root/t2rss）
 
