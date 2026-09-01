@@ -65,6 +65,15 @@
 </footer>
 <script>
 (function () {
+    // 操作提示仍通过查询参数传递，但页面渲染后立即清理地址栏，保留已显示的 flash。
+    var url = new URL(window.location.href);
+    if (url.searchParams.has("msg") || url.searchParams.has("level")) {
+        url.searchParams.delete("msg");
+        url.searchParams.delete("level");
+        var cleanUrl = url.pathname + (url.search ? url.search : "") + url.hash;
+        window.history.replaceState({}, "", cleanUrl);
+    }
+
     var select = document.getElementById("theme-select");
     if (!select) {
         return;
