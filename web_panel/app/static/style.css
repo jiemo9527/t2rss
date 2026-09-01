@@ -598,6 +598,21 @@ th {
     margin-bottom: 1rem;
 }
 
+.flow-grid-two {
+    grid-template-columns: minmax(0, 1.5fr) auto minmax(280px, 0.9fr);
+}
+
+.pending-sources-form {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px dashed #c9d9e6;
+}
+
+.pending-sources-form h3 {
+    margin: 0 0 0.6rem;
+    color: #1a4f65;
+}
+
 .flow-step {
     border: 1px solid #d7e3ef;
     border-radius: 0.7rem;

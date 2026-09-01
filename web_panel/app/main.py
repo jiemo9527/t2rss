@@ -899,21 +899,13 @@ def load_source_items_from_config(raw_config: Dict[str, str]) -> list[Dict[str, 
     return results
 
 
-def source_items_to_input_text(items: list[Dict[str, Any]]) -> str:
-    sources = []
-    for item in items:
-        source = str(item.get("source", "")).strip()
-        if source:
-            sources.append(source)
-    if not sources:
-        return ""
-    return "\n".join(sources)
-
 
 def build_forward_settings_context(
     request: Request,
     raw_config: Dict[str, str],
     source_items: list[Dict[str, Any]] | None = None,
+    pending_source_items: list[Dict[str, Any]] | None = None,
+    pending_sources_input: str = "",
     override_destination: str | None = None,
 ) -> Dict[str, Any]:
     items = source_items if source_items is not None else load_source_items_from_config(raw_config)
@@ -925,7 +917,8 @@ def build_forward_settings_context(
         **common_context(request, "转发设置"),
         "config": config_view,
         "source_items": items,
-        "sources_input": source_items_to_input_text(items),
+        "pending_source_items": pending_source_items or [],
+        "pending_sources_input": pending_sources_input,
         "last_ids": checkpoint_store.list_last_ids(),
     }
 
@@ -1389,68 +1382,30 @@ async def forward_settings_save(request: Request):
 
     form = await request.form()
     current = config_store.load_raw_config()
-    sources_input_text = str(form.get("sources_input", "")).strip()
+    current_source_items = load_source_items_from_config(current)
 
     destination_channel = str(form.get("DESTINATION_CHANNEL", "")).strip()
     if not destination_channel:
         return redirect_with_message("/forward-settings", "请先填写目标频道。", "warn")
 
+    # 以服务器当前配置为基准：本页初始快照中不存在的来源，是其他页面/请求新加入的，必须保留。
+    snapshot_sources = {normalize_source_token(value) for value in form.getlist("source_snapshot") if value}
+    posted_sources = {normalize_source_token(value) for value in form.getlist("row_source") if value}
+    enabled_source_set = {normalize_source_token(value) for value in form.getlist("row_enabled_source") if value}
     source_items: list[Dict[str, Any]] = []
-    parsed_sources = parse_sources_input(sources_input_text)
-    if parsed_sources:
-        row_sources_raw = form.getlist("row_source")
-        row_cids_raw = form.getlist("row_cid")
-        row_status_raw = form.getlist("row_status")
-        row_error_raw = form.getlist("row_error")
-        enabled_source_set = {normalize_source_token(item) for item in form.getlist("row_enabled_source") if item}
-
-        row_map: Dict[str, Dict[str, Any]] = {}
-        for index, source_raw in enumerate(row_sources_raw):
-            source = normalize_source_token(source_raw)
-            if not source:
-                continue
-
-            cid_value = row_cids_raw[index] if index < len(row_cids_raw) else ""
-            status_value = row_status_raw[index] if index < len(row_status_raw) else ""
-            error_value = row_error_raw[index] if index < len(row_error_raw) else ""
-
-            cid: int | None = None
-            if str(cid_value).strip():
-                try:
-                    cid = int(str(cid_value).strip())
-                except ValueError:
-                    cid = None
-
-            row_map[source] = {
-                "cid": cid,
-                "enabled": source in enabled_source_set and cid is not None,
-                "status": str(status_value or ("ok" if cid is not None else "failed")),
-                "error": str(error_value or ""),
-            }
-
-        for source in parsed_sources:
-            row = row_map.get(source)
-            if row is None:
-                source_items.append(
-                    {
-                        "source": source,
-                        "cid": None,
-                        "enabled": False,
-                        "status": "pending",
-                        "error": "待解析",
-                    }
-                )
-                continue
-
-            source_items.append(
-                {
-                    "source": source,
-                    "cid": row.get("cid"),
-                    "enabled": bool(row.get("enabled", False)),
-                    "status": str(row.get("status", "pending")),
-                    "error": str(row.get("error", "")),
-                }
-            )
+    for item in current_source_items:
+        source = normalize_source_token(item.get("source", ""))
+        if not source:
+            continue
+        if source not in snapshot_sources:
+            source_items.append(dict(item))
+            continue
+        if source not in posted_sources:
+            # 仅删除“本页初始快照”中被删除按钮移除的行。
+            continue
+        updated = dict(item)
+        updated["enabled"] = source in enabled_source_set and isinstance(updated.get("cid"), int)
+        source_items.append(updated)
 
     enabled_cids = sorted({item["cid"] for item in source_items if isinstance(item.get("cid"), int) and item.get("enabled")})
 
@@ -1512,111 +1467,149 @@ async def forward_settings_save(request: Request):
 @app.post("/settings/resolve")
 @app.post("/forward-settings/resolve")
 async def resolve_identifiers(request: Request):
+    """解析仅用于“新增来源”暂存区，绝不触碰已保存的来源配置或断点。"""
     auth_redirect = auth_redirect_if_needed(request)
     if auth_redirect:
         return auth_redirect
 
     form = await request.form()
-    raw_input = str(form.get("sources_input", "")).strip()
+    raw_input = str(form.get("pending_sources_input", "")).strip()
     if not raw_input:
         raw_input = str(form.get("identifiers_input", "")).strip()
     identifiers = parse_sources_input(raw_input)
     raw_config = config_store.load_raw_config()
-    destination_channel = str(form.get("DESTINATION_CHANNEL", raw_config.get("DESTINATION_CHANNEL", ""))).strip()
+    existing_items = load_source_items_from_config(raw_config)
+    existing_sources = {normalize_source_token(item.get("source", "")) for item in existing_items}
+    existing_cids = {item.get("cid") for item in existing_items if isinstance(item.get("cid"), int)}
 
     if not identifiers:
-        context = build_forward_settings_context(request, raw_config, source_items=[], override_destination=destination_channel)
-        context["sources_input"] = raw_input
-        context["msg"] = "请至少输入一个待解析的来源频道。"
+        context = build_forward_settings_context(request, raw_config, pending_sources_input=raw_input)
+        context["msg"] = "请至少输入一个待新增并解析的来源频道。"
         context["level"] = "warn"
         return templates.TemplateResponse("forward_settings.html", context)
 
-    old_source_rows = form.getlist("row_source")
-    old_source_cids = form.getlist("row_cid")
-    old_enabled = {normalize_source_token(item) for item in form.getlist("row_enabled_source") if item}
-
-    old_map: Dict[str, Dict[str, Any]] = {}
-    for idx, src in enumerate(old_source_rows):
-        key = normalize_source_token(src)
-        if not key:
-            continue
-        cid_raw = old_source_cids[idx] if idx < len(old_source_cids) else ""
-        cid_value: int | None = None
-        if str(cid_raw).strip():
-            try:
-                cid_value = int(str(cid_raw).strip())
-            except ValueError:
-                cid_value = None
-        old_map[key] = {
-            "cid": cid_value,
-            "enabled": key in old_enabled,
-        }
-
-    source_items: list[Dict[str, Any]] = []
     try:
         resolved_rows = await resolve_identifiers_preview(config_store, identifiers, logger)
-        resolved_map = {str(row.get("identifier", "")).strip(): row for row in resolved_rows}
-
-        for source in identifiers:
-            previous = old_map.get(source, {})
-            resolved = resolved_map.get(source, {})
-            ok = bool(resolved.get("ok", False))
-            cid_val: int | None = None
-
-            channel_id_value = resolved.get("channel_id")
-            if ok and channel_id_value not in {None, ""}:
+        pending_items: list[Dict[str, Any]] = []
+        for resolved in resolved_rows:
+            source = normalize_source_token(resolved.get("identifier", ""))
+            cid_value = resolved.get("channel_id")
+            cid: int | None = None
+            if bool(resolved.get("ok")) and cid_value not in {None, ""}:
                 try:
-                    cid_val = int(str(channel_id_value).strip())
+                    cid = int(str(cid_value).strip())
                 except ValueError:
-                    cid_val = None
-            else:
-                cid_val = previous.get("cid")
+                    cid = None
 
-            enabled_default = previous.get("enabled", True)
-            if cid_val is None:
-                enabled_default = False
+            duplicate_reason = ""
+            if source in existing_sources:
+                duplicate_reason = "该来源已在已保存列表中"
+            elif cid is not None and cid in existing_cids:
+                duplicate_reason = "该 CID 已在已保存列表中"
 
-            source_items.append(
+            pending_items.append(
                 {
                     "source": source,
-                    "cid": cid_val,
-                    "enabled": bool(enabled_default),
-                    "status": "ok" if cid_val is not None else "failed",
-                    "error": "" if cid_val is not None else str(resolved.get("error", "解析失败")),
+                    "cid": cid,
+                    "latest_message_id": int(resolved.get("latest_message_id", 0) or 0),
+                    "enabled": cid is not None and not duplicate_reason,
+                    "status": "duplicate" if duplicate_reason else ("ok" if cid is not None else "failed"),
+                    "error": duplicate_reason or ("" if cid is not None else str(resolved.get("error", "解析失败"))),
                 }
             )
 
-        resolved_cids = sorted({item["cid"] for item in source_items if isinstance(item.get("cid"), int)})
-        latest_id_map: Dict[int, int] = {}
-        for source in identifiers:
-            resolved = resolved_map.get(source, {})
-            channel_id_value = resolved.get("channel_id")
-            latest_message_id = int(resolved.get("latest_message_id", 0) or 0)
-            if channel_id_value not in {None, ""} and latest_message_id > 0:
-                try:
-                    latest_id_map[int(str(channel_id_value).strip())] = latest_message_id
-                except ValueError:
-                    continue
-        created_count = ensure_channel_checkpoints(resolved_cids, latest_id_map)
-
-        context = build_forward_settings_context(request, raw_config, source_items=source_items, override_destination=destination_channel)
-        context["sources_input"] = "\n".join(identifiers)
-        if created_count > 0:
-            context["msg"] = (
-                f"来源频道解析完成，已自动创建 {created_count} 条断点记录（默认从当前最新消息开始，"
-                "如需补历史请在下方断点表手动改小 last_id）。请确认启用状态后保存通道配置。"
-            )
-        else:
-            context["msg"] = "来源频道解析完成，断点记录已就绪。请确认启用状态后保存通道配置。"
+        context = build_forward_settings_context(
+            request,
+            raw_config,
+            pending_source_items=pending_items,
+            pending_sources_input="\n".join(identifiers),
+        )
+        context["msg"] = "新增来源已解析，确认勾选后点击“加入已保存来源”。解析阶段不会改动现有来源或断点。"
         context["level"] = "success"
     except Exception as exc:
-        source_items = []
-        context = build_forward_settings_context(request, raw_config, source_items=source_items, override_destination=destination_channel)
-        context["sources_input"] = "\n".join(identifiers)
-        context["msg"] = f"来源频道解析失败：{exc}"
+        context = build_forward_settings_context(request, raw_config, pending_sources_input="\n".join(identifiers))
+        context["msg"] = f"新增来源解析失败：{exc}"
         context["level"] = "error"
 
     return templates.TemplateResponse("forward_settings.html", context)
+
+
+@app.post("/forward-settings/sources/add")
+async def add_resolved_sources(request: Request):
+    """将用户确认的暂存来源合并入当前配置；始终以服务器最新配置为基准。"""
+    auth_redirect = auth_redirect_if_needed(request)
+    if auth_redirect:
+        return auth_redirect
+
+    form = await request.form()
+    current = config_store.load_raw_config()
+    source_items = load_source_items_from_config(current)
+    selected_sources = []
+    seen_selected_sources: set[str] = set()
+    for value in form.getlist("pending_selected_source"):
+        source = normalize_source_token(value)
+        if source and source not in seen_selected_sources:
+            selected_sources.append(source)
+            seen_selected_sources.add(source)
+
+    if not selected_sources:
+        return redirect_with_message("/forward-settings", "请至少勾选一个解析成功的新来源。", "warn")
+
+    # 不信任页面隐藏字段的 CID / last_id：加入前重新解析所选来源，避免过期或被篡改的暂存结果写入配置。
+    try:
+        resolved_rows = await resolve_identifiers_preview(config_store, selected_sources, logger)
+    except Exception as exc:
+        return redirect_with_message("/forward-settings", f"加入前重新解析来源失败：{exc}", "error")
+
+    existing_sources = {normalize_source_token(item.get("source", "")) for item in source_items}
+    existing_cids = {item.get("cid") for item in source_items if isinstance(item.get("cid"), int)}
+    latest_id_map: Dict[int, int] = {}
+    added_count = 0
+    skipped_duplicates = 0
+    failed_sources: list[str] = []
+
+    for resolved in resolved_rows:
+        source = normalize_source_token(resolved.get("identifier", ""))
+        try:
+            cid = int(str(resolved.get("channel_id", "")).strip())
+        except ValueError:
+            failed_sources.append(source or "未知来源")
+            continue
+        if not bool(resolved.get("ok")) or source in existing_sources or cid in existing_cids:
+            skipped_duplicates += 1
+            continue
+
+        try:
+            latest_id = max(0, int(resolved.get("latest_message_id", 0) or 0))
+        except (TypeError, ValueError):
+            latest_id = 0
+        source_items.append({"source": source, "cid": cid, "enabled": True, "status": "ok", "error": ""})
+        existing_sources.add(source)
+        existing_cids.add(cid)
+        latest_id_map[cid] = latest_id
+        added_count += 1
+
+    if not added_count:
+        message = "没有可加入的新来源。"
+        if skipped_duplicates:
+            message += f" 已跳过 {skipped_duplicates} 个与当前配置重复的来源。"
+        return redirect_with_message("/forward-settings", message, "warn")
+
+    enabled_cids = sorted({item["cid"] for item in source_items if isinstance(item.get("cid"), int) and item.get("enabled")})
+    config_store.save_raw_config(
+        {
+            "CHANNEL_IDS": ",".join(str(cid) for cid in enabled_cids),
+            "CHANNEL_IDENTIFIERS": ",".join(item["source"] for item in source_items),
+            "CHANNEL_SOURCES_JSON": json.dumps(source_items, ensure_ascii=False, separators=(",", ":")),
+        }
+    )
+    checkpoint_count = ensure_channel_checkpoints(list(latest_id_map), latest_id_map)
+    message = f"已加入 {added_count} 个新来源，并创建 {checkpoint_count} 条从当前最新消息开始的断点。"
+    if skipped_duplicates:
+        message += f" 已跳过 {skipped_duplicates} 个与当前配置重复的来源。"
+    if failed_sources:
+        message += " 未加入：" + "、".join(failed_sources) + "。"
+    return redirect_with_message("/forward-settings", message, "success")
 
 
 @app.post("/settings/add-cid")

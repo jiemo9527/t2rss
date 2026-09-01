@@ -2,87 +2,90 @@
 
 {% block content %}
 <section class="card">
-    <h2>转发通道流程图配置</h2>
-    <p>流程：来源频道列表 → 解析成 CID → 选择启用来源 → 填写目标频道并保存。</p>
+    <h2>新增来源（独立暂存）</h2>
+    <p>新增来源会先在暂存区解析和去重。点击“加入已保存来源”前，现有来源、开关和断点不会被改动。</p>
 
+    <form method="post" action="/forward-settings/resolve">
+        <label>
+            待新增的来源频道
+            <textarea name="pending_sources_input" rows="5" placeholder="每行一个来源，支持 t.me 邀请链接/用户名链接">{{ pending_sources_input }}</textarea>
+            <small class="field-hint">支持：<code>https://t.me/+xxxxx</code>、<code>https://t.me/abc</code>。私有频道请先用当前会话账号加入后再解析。</small>
+        </label>
+        <div class="form-actions">
+            <button type="submit">解析新增来源</button>
+        </div>
+    </form>
+
+    {% if pending_source_items %}
+    <form method="post" action="/forward-settings/sources/add" class="pending-sources-form">
+        <h3>解析暂存结果</h3>
+        <table>
+            <thead><tr><th>加入</th><th>来源频道</th><th>CID</th><th>状态</th></tr></thead>
+            <tbody>
+            {% for item in pending_source_items %}
+            <tr>
+                <td>
+                    {% if item.cid and item.status != 'duplicate' %}
+                    <input type="checkbox" name="pending_selected_source" value="{{ item.source }}" {% if item.enabled %}checked{% endif %}>
+                    {% else %}—{% endif %}
+                </td>
+                <td>{{ item.source }}<input type="hidden" name="pending_source" value="{{ item.source }}"></td>
+                <td>{{ item.cid if item.cid else "-" }}<input type="hidden" name="pending_cid" value="{{ item.cid if item.cid else '' }}"></td>
+                <td>
+                    {% if item.status == 'duplicate' %}<span class="status-badge status-fail">重复：{{ item.error }}</span>
+                    {% elif item.cid %}<span class="status-badge status-ok">解析成功</span>
+                    {% else %}<span class="status-badge status-fail">{{ item.error or "解析失败" }}</span>{% endif %}
+                    <input type="hidden" name="pending_latest_message_id" value="{{ item.latest_message_id or 0 }}">
+                    <input type="hidden" name="pending_status" value="{{ item.status }}">
+                    <input type="hidden" name="pending_error" value="{{ item.error }}">
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <small class="field-hint">加入后，新来源从当前最新消息开始接收，不会补发历史消息；可在下方断点管理中手动调整。</small>
+        <div class="form-actions"><button type="submit">加入已保存来源</button></div>
+    </form>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h2>已保存的转发来源与规则</h2>
+    <p>此表只管理当前已保存来源。启用/停用、删除、目标频道和过滤规则统一在此保存；新增来源不会干扰本表。</p>
     <form method="post" action="/forward-settings/save">
-        <div class="flow-grid">
+        <div class="flow-grid flow-grid-two">
             <div class="flow-step">
-                <h3>① 来源频道列表</h3>
-                <textarea name="sources_input" rows="18" placeholder="每行一个来源，支持 t.me 邀请链接/用户名链接">{{ sources_input }}</textarea>
-                <small class="field-hint">支持混合格式示例：<code>https://t.me/+xxxxx</code>、<code>https://t.me/abc</code>。</small>
-                <div class="flow-step-actions">
-                    <button type="submit" formaction="/forward-settings/resolve">解析来源 -> CID</button>
-                </div>
-            </div>
-
-            <div class="flow-arrow">→</div>
-
-            <div class="flow-step">
-                <h3>② CID 转换结果与来源开关</h3>
+                <h3>① 已保存来源</h3>
                 {% if source_items %}
                 <table id="source-items-table">
-                    <thead>
-                    <tr>
-                        <th>启用</th>
-                        <th>来源频道</th>
-                        <th>CID</th>
-                        <th>状态</th>
-                        <th>操作</th>
-                    </tr>
-                    </thead>
+                    <thead><tr><th>启用</th><th>来源频道</th><th>CID</th><th>状态</th><th>操作</th></tr></thead>
                     <tbody>
                     {% for item in source_items %}
                     <tr data-source="{{ item.source }}">
+                        <td><input type="checkbox" name="row_enabled_source" value="{{ item.source }}" {% if item.enabled and item.cid %}checked{% endif %}></td>
+                        <td>{{ item.source }}<input type="hidden" name="source_snapshot" value="{{ item.source }}"><input type="hidden" name="row_source" value="{{ item.source }}"></td>
+                        <td>{{ item.cid if item.cid else "-" }}<input type="hidden" name="row_cid" value="{{ item.cid if item.cid else '' }}"></td>
                         <td>
-                            <input
-                                type="checkbox"
-                                name="row_enabled_source"
-                                value="{{ item.source }}"
-                                {% if item.enabled and item.cid %}checked{% endif %}
-                            >
+                            {% if item.cid %}<span class="status-badge status-ok">已就绪</span>
+                            {% else %}<span class="status-badge status-fail">{{ item.error or "解析失败" }}</span>{% endif %}
+                            <input type="hidden" name="row_status" value="{{ item.status }}"><input type="hidden" name="row_error" value="{{ item.error }}">
                         </td>
-                        <td>
-                            {{ item.source }}
-                            <input type="hidden" name="row_source" value="{{ item.source }}">
-                        </td>
-                        <td>
-                            {{ item.cid if item.cid else "-" }}
-                            <input type="hidden" name="row_cid" value="{{ item.cid if item.cid else '' }}">
-                        </td>
-                        <td>
-                            {% if item.cid %}
-                            <span class="status-badge status-ok">解析成功</span>
-                            {% else %}
-                            <span class="status-badge status-fail">{{ item.error or "解析失败" }}</span>
-                            {% endif %}
-                            <input type="hidden" name="row_status" value="{{ item.status }}">
-                            <input type="hidden" name="row_error" value="{{ item.error }}">
-                        </td>
-                        <td>
-                            <button type="button" class="button-danger button-small source-row-remove" data-source="{{ item.source }}">删除</button>
-                        </td>
+                        <td><button type="button" class="button-danger button-small source-row-remove" data-source="{{ item.source }}">从已保存列表删除</button></td>
                     </tr>
                     {% endfor %}
                     </tbody>
                 </table>
-                {% else %}
-                <p>暂无解析结果，请先在左侧输入来源并点击“解析来源 -> CID”。</p>
-                {% endif %}
+                {% else %}<p>暂无已保存来源。请先使用上方“新增来源”流程。</p>{% endif %}
             </div>
-
             <div class="flow-arrow">→</div>
-
             <div class="flow-step">
-                <h3>③ 目标频道</h3>
+                <h3>② 目标频道</h3>
                 <label>
                     DESTINATION_CHANNEL
                     <input type="text" name="DESTINATION_CHANNEL" value="{{ config.get('DESTINATION_CHANNEL', '') }}" placeholder="https://t.me/rjuhrouh">
                     <small class="field-hint">填写最终转发到的目标频道链接或可识别目标实体。</small>
                 </label>
-                <div class="flow-step-actions">
-                    <button type="submit">保存通道配置</button>
-                </div>
+                <div class="flow-step-actions"><button type="submit">保存来源与目标频道</button></div>
             </div>
         </div>
 
@@ -493,9 +496,7 @@
     });
 
     var sourceTable = document.getElementById("source-items-table");
-    var sourcesInput = document.querySelector('textarea[name="sources_input"]');
-
-    if (sourceTable && sourcesInput) {
+    if (sourceTable) {
         sourceTable.addEventListener("click", function (event) {
             var target = event.target;
             if (!(target instanceof Element)) {
@@ -509,13 +510,10 @@
 
             event.preventDefault();
             event.stopPropagation();
-
-            var source = String(removeBtn.getAttribute("data-source") || "");
             var row = removeBtn.closest("tr");
             if (row) {
                 row.remove();
             }
-            removeSourceFromTextarea(sourcesInput, source);
         });
     }
 
