@@ -33,6 +33,10 @@ It is updated for the current codebase status (`main` keeps `web_panel`; legacy 
   - `web_panel/scripts/restore_text_rules.py`: restore those rules into a running
     container, refusing to write unless they compile and survive the config
     encode/decode round-trip
+  - `web_panel/tests/`: standalone regression scripts (no pytest; run each with
+    `python <file>` inside the container) — `test_config_roundtrip.py`,
+    `test_persistence_audit.py`, `test_forwarder_resilience.py`,
+    `test_lock_staleness.py`
   - `web_panel/tools/create_session.py`: creates `t2rss.session` in container data dir
   - `web_panel/docker-compose.yml`, `web_panel/Dockerfile`: container runtime
   - `web_panel/data/`: runtime state (config, db, logs, session, backups)
@@ -144,10 +148,14 @@ Panel/security/scheduler keys:
 `run_forwarder_once()` flow:
 
 1. Validate required config and active source CID list
-2. Enforce lock file (`forwarder.lock`)
+2. Enforce lock file (`forwarder.lock`), which stores `<boot_id>:<pid>`; a stale
+   lock (other instance, legacy bare PID, malformed) is cleared and the run
+   proceeds
 3. Open Telethon client with `t2rss.session`
 4. If dedup enabled, pre-clean destination recent messages by Quark link
-5. Pull new messages from each source by DB checkpoint (`min_id=last_id`)
+5. Pull new messages from each source by DB checkpoint (`min_id=last_id`). A
+   source that fails to fetch is logged, recorded in `fetch_failed_channels` and
+   skipped — it never aborts the remaining sources
 6. Merge and sort by message date
 7. If dedup enabled:
    - Optional pre-resolve via Bot for trigger messages (see section 8)
@@ -167,6 +175,10 @@ Panel/security/scheduler keys:
    - `forwarded_ids_map` advances for **every outcome except `error`** — a
      deliberately skipped message counts as progress. Only genuine send failures
      hold position so they are retried. Test mode advances nothing.
+   - Every write is then clamped by `_clamp_checkpoints_below_failures()` to
+     `oldest_failed_id - 1` per channel, so a later success in the same batch
+     cannot drag the checkpoint past an earlier failure. Held-back channels are
+     reported in `stats.checkpoint_held_back_channels`.
 10. Remove lock in `finally`
 
 ## 8) Dedup + Bot Link Expansion Rules
@@ -262,11 +274,22 @@ Important behavior notes:
 
 When editing code, preserve these guarantees unless intentionally migrating behavior:
 
-- Single-instance lock behavior
+- Single-instance lock behavior. The lock stores `<boot_id>:<pid>`; a lock from
+  another process instance (or the legacy bare-PID format) is stale and is
+  cleared automatically. Never reduce the guard to a bare `lock_file.exists()`:
+  inside a container the app is always PID 1, so a lock left by a container that
+  died mid-run wedges the forwarder forever.
+- One unreachable source must never abort the cycle. The per-channel fetch is
+  wrapped in try/except (`CancelledError` still propagates) and failures are
+  recorded in `stats.fetch_failed_channels`.
 - Checkpoint consistency and monotonic progression semantics
 - Skipped messages advance the checkpoint; only `error` holds position. Reverting
   this reintroduces the self-perpetuating loop where a permanently-skipped
   message is re-fetched on every run forever.
+- Every checkpoint write goes through `_clamp_checkpoints_below_failures()`, so
+  no write can advance past a message that failed to send. Writing
+  `latest_ids_map` (or any bare high-water mark) directly makes a failed message
+  be skipped forever, which defeats the rule above.
 - Every network await that can block indefinitely (notably `download_media`)
   stays bounded by a timeout, so one stalled item cannot consume the whole
   `PANEL_TOTAL_TIMEOUT_SECONDS` budget.
