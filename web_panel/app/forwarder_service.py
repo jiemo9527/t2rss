@@ -19,11 +19,49 @@ from .time_utils import now_shanghai_iso
 QUARK_LINK_PATTERN = re.compile(r"https?://pan\.quark\.cn/s/[a-zA-Z0-9]+", re.IGNORECASE)
 CLOUD115_LINK_PATTERN = re.compile(r"https?://(?:www\.)?115cdn\.com/s/[a-zA-Z0-9]+", re.IGNORECASE)
 HDHIVE115_LINK_PATTERN = re.compile(r"https?://(?:www\.)?hdhive\.com/resource/115/[a-zA-Z0-9]+", re.IGNORECASE)
+BAIDU_LINK_PATTERN = re.compile(r"https?://pan\.baidu\.com/s/[a-zA-Z0-9_-]+", re.IGNORECASE)
+BAIDU_SHORT_LINK_PATTERN = re.compile(r"https?://pan\.baidu\.com/share/init\?surl=[a-zA-Z0-9_-]+", re.IGNORECASE)
+UC_LINK_PATTERN = re.compile(r"https?://(?:drive|fast)\.uc\.cn/s/[a-zA-Z0-9]+", re.IGNORECASE)
+
+# Restricted providers: when a message's ONLY netdisk links come from these,
+# it is not forwarded unless that provider's toggle is on.
+XUNLEI_LINK_PATTERN = re.compile(r"https?://pan\.xunlei\.com/s/[a-zA-Z0-9_-]+", re.IGNORECASE)
+# 123 pan rotates its domain (123pan/123684/123865/123912/...).
+PAN123_LINK_PATTERN = re.compile(
+    r"https?://(?:www\.)?123(?:pan|[0-9]{3})\.com/s/[a-zA-Z0-9_-]+", re.IGNORECASE
+)
+CAIYUN_LINK_PATTERN = re.compile(
+    r"https?://yun\.139\.com/shareweb/#/w/i/[a-zA-Z0-9_-]+", re.IGNORECASE
+)
+GUANGYA_LINK_PATTERN = re.compile(
+    r"https?://(?:www\.)?guangyapan\.com/s/[a-zA-Z0-9_-]+", re.IGNORECASE
+)
+ALIYUN_LINK_PATTERN = re.compile(
+    r"https?://(?:www\.)?(?:alipan|aliyundrive)\.com/s/[a-zA-Z0-9_-]+", re.IGNORECASE
+)
 URL_PATTERN = re.compile(r'https?://[^\s<>"]+')
 BOT_TRIGGER_PHRASE = "点击获取夸克链接"
 SEND_RETRY_MAX_ATTEMPTS = 3
 SEND_RETRY_BASE_DELAY_SECONDS = 2
 SEND_INTERVAL_SECONDS = 3
+MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 180
+
+
+def _video_media_size_bytes(message) -> Optional[int]:
+    """Return the byte size when the message carries a real video, else None.
+
+    Animated GIFs (DocumentAttributeAnimated) are excluded on purpose: they are
+    mp4 containers but behave as stickers/emotes, not as the large videos we skip.
+    """
+    document = getattr(message, "video", None)
+    if document is None:
+        return None
+    if getattr(message, "gif", None) is not None:
+        return None
+    size = getattr(document, "size", None)
+    if not isinstance(size, int):
+        return None
+    return size
 
 
 QUARK_TRIGGER_LINK_PAREN_PATTERN = re.compile(
@@ -87,6 +125,41 @@ def _normalize_115_link(raw_url: Optional[str]) -> Optional[str]:
     return candidates[0][1]
 
 
+def _normalize_baidu_link(raw_url: Optional[str]) -> Optional[str]:
+    content = str(raw_url or "")
+    candidates: List[tuple[int, str]] = []
+
+    for match in BAIDU_LINK_PATTERN.finditer(content):
+        parsed = urlparse(match.group(0))
+        token = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+        if token:
+            candidates.append((match.start(), f"https://pan.baidu.com/s/{token}"))
+
+    # `share/init?surl=<token>` is the same share as `/s/1<token>`; normalize to one key.
+    for match in BAIDU_SHORT_LINK_PATTERN.finditer(content):
+        surl = parse_qs(urlparse(match.group(0)).query).get("surl", [""])[0]
+        if surl:
+            candidates.append((match.start(), f"https://pan.baidu.com/s/1{surl}"))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _normalize_uc_link(raw_url: Optional[str]) -> Optional[str]:
+    match = UC_LINK_PATTERN.search(str(raw_url or ""))
+    if not match:
+        return None
+
+    parsed = urlparse(match.group(0))
+    token = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+    if not token:
+        return None
+    # drive.uc.cn and fast.uc.cn serve the same share token; collapse to one key.
+    return f"https://drive.uc.cn/s/{token}"
+
+
 def extract_quark_link(text: Optional[str]) -> Optional[str]:
     return _normalize_quark_link(text)
 
@@ -95,23 +168,152 @@ def extract_115_link(text: Optional[str]) -> Optional[str]:
     return _normalize_115_link(text)
 
 
-def extract_dedup_link(text: Optional[str], include_115: bool = True) -> Optional[str]:
+def extract_baidu_link(text: Optional[str]) -> Optional[str]:
+    return _normalize_baidu_link(text)
+
+
+def extract_uc_link(text: Optional[str]) -> Optional[str]:
+    return _normalize_uc_link(text)
+
+
+# Dedup provider priority: quark > 115 > baidu > uc. Only the highest-priority
+# link present in a message becomes its dedup key.
+DEDUP_PROVIDERS: List[tuple[str, Any]] = [
+    ("quark", extract_quark_link),
+    ("115", extract_115_link),
+    ("baidu", extract_baidu_link),
+    ("uc", extract_uc_link),
+]
+
+
+def _enabled_dedup_providers(
+    include_115: bool = True,
+    include_baidu: bool = True,
+    include_uc: bool = True,
+) -> List[tuple[str, Any]]:
+    toggles = {"quark": True, "115": include_115, "baidu": include_baidu, "uc": include_uc}
+    return [(name, fn) for name, fn in DEDUP_PROVIDERS if toggles.get(name, False)]
+
+
+# Restricted netdisk providers. A message whose ONLY netdisk links come from
+# disabled providers here is skipped entirely; enabling a provider makes its
+# links count as ordinary content again.
+RESTRICTED_PROVIDERS: List[tuple[str, Any]] = [
+    ("xunlei", XUNLEI_LINK_PATTERN),
+    ("pan123", PAN123_LINK_PATTERN),
+    ("caiyun", CAIYUN_LINK_PATTERN),
+    ("guangya", GUANGYA_LINK_PATTERN),
+    ("aliyun", ALIYUN_LINK_PATTERN),
+]
+
+RESTRICTED_PROVIDER_LABELS = {
+    "xunlei": "迅雷",
+    "pan123": "123网盘",
+    "caiyun": "移动云盘",
+    "guangya": "光鸭云盘",
+    "aliyun": "阿里云盘",
+}
+
+
+def _message_link_sources(message, resolved_url: Optional[str] = None) -> List[str]:
+    """All places a share link can hide: text, blue-link entities, buttons, bot result."""
+    message_text = (
+        getattr(message, "raw_text", None)
+        or getattr(message, "message", None)
+        or getattr(message, "text", None)
+        or getattr(message, "caption", None)
+    )
+
+    sources: List[str] = []
+    if message_text:
+        sources.append(str(message_text))
+    if resolved_url:
+        sources.append(str(resolved_url))
+
+    for entity in getattr(message, "entities", None) or []:
+        if not isinstance(entity, MessageEntityTextUrl):
+            continue
+        entity_url = str(getattr(entity, "url", "") or "")
+        if entity_url:
+            sources.append(entity_url)
+
+    for button_url in _extract_button_urls(message):
+        if button_url:
+            sources.append(button_url)
+
+    return sources
+
+
+def find_restricted_providers(
+    message,
+    disabled_providers: Set[str],
+    resolved_url: Optional[str] = None,
+) -> List[str]:
+    """Names of DISABLED restricted providers whose links appear in the message."""
+    if not disabled_providers:
+        return []
+
+    sources = _message_link_sources(message, resolved_url)
+    if not sources:
+        return []
+
+    found: List[str] = []
+    for name, pattern in RESTRICTED_PROVIDERS:
+        if name not in disabled_providers:
+            continue
+        if any(pattern.search(source) for source in sources):
+            found.append(name)
+    return found
+
+
+def has_allowed_netdisk_link(
+    message,
+    enabled_restricted: Optional[Set[str]] = None,
+    resolved_url: Optional[str] = None,
+) -> bool:
+    """True if the message carries a link from any provider the user allows.
+
+    Allowed = the four dedup providers (quark/115/baidu/uc) plus every restricted
+    provider currently switched ON. Dedup toggles are forced ON for this check so
+    that narrowing *dedup* scope never silently makes a message look
+    'restricted-only' — dedup scope and forwarding eligibility stay independent.
+    """
+    sources = _message_link_sources(message, resolved_url)
+    for source in sources:
+        if extract_dedup_link(source, include_115=True, include_baidu=True, include_uc=True):
+            return True
+
+    for name, pattern in RESTRICTED_PROVIDERS:
+        if name not in (enabled_restricted or set()):
+            continue
+        if any(pattern.search(source) for source in sources):
+            return True
+    return False
+
+
+def extract_dedup_link(
+    text: Optional[str],
+    include_115: bool = True,
+    include_baidu: bool = True,
+    include_uc: bool = True,
+) -> Optional[str]:
     content = str(text or "")
     if not content:
         return None
 
-    quark_link = extract_quark_link(content)
-    if quark_link:
-        return quark_link
-    if not include_115:
-        return None
-    return extract_115_link(content)
+    for _, extractor in _enabled_dedup_providers(include_115, include_baidu, include_uc):
+        link = extractor(content)
+        if link:
+            return link
+    return None
 
 
 def _extract_message_dedup_link(
     message,
     resolved_url: Optional[str] = None,
     include_115: bool = True,
+    include_baidu: bool = True,
+    include_uc: bool = True,
 ) -> Optional[str]:
     message_text = (
         getattr(message, "raw_text", None)
@@ -138,14 +340,9 @@ def _extract_message_dedup_link(
         if button_url:
             link_sources.append(button_url)
 
-    for source in link_sources:
-        link = extract_quark_link(source)
-        if link:
-            return link
-
-    if include_115:
+    for _, extractor in _enabled_dedup_providers(include_115, include_baidu, include_uc):
         for source in link_sources:
-            link = extract_115_link(source)
+            link = extractor(source)
             if link:
                 return link
 
@@ -760,7 +957,12 @@ async def _cleanup_and_get_historical_links(
         if isinstance(message, MessageService):
             continue
 
-        link = _extract_message_dedup_link(message, include_115=config.deduplication_115_enabled)
+        link = _extract_message_dedup_link(
+            message,
+            include_115=config.deduplication_115_enabled,
+            include_baidu=config.deduplication_baidu_enabled,
+            include_uc=config.deduplication_uc_enabled,
+        )
         if link:
             link_groups[link].append(message)
 
@@ -801,6 +1003,8 @@ async def _forward_single_message(
     text_replacement_terms: List[str],
     text_replacement_regex_rules: List[re.Pattern[str]],
     pre_resolved_url: Optional[str] = None,
+    max_video_size_mb: int = 0,
+    enabled_restricted_providers: Optional[Set[str]] = None,
 ) -> str:
     media_path = None
     try:
@@ -830,6 +1034,32 @@ async def _forward_single_message(
 
         if not outbound_text and not message.media:
             return "skipped_no_content"
+
+        # Restricted netdisk gate: skip only when EVERY netdisk link in the
+        # message belongs to a disabled restricted provider. A message that also
+        # carries an allowed link (quark/115/baidu/uc, or an enabled restricted
+        # provider) still goes through, and link-free messages are unaffected.
+        enabled_restricted = enabled_restricted_providers or set()
+        disabled_restricted = {name for name, _ in RESTRICTED_PROVIDERS} - enabled_restricted
+        hits = find_restricted_providers(message, disabled_restricted, pre_resolved_url)
+        if hits and not has_allowed_netdisk_link(message, enabled_restricted, pre_resolved_url):
+            logger.info(
+                "⏭️ 跳过（受限网盘）：消息 %s 仅含 %s 链接。",
+                getattr(message, "id", "unknown"),
+                "、".join(RESTRICTED_PROVIDER_LABELS.get(name, name) for name in hits),
+            )
+            return "skipped_restricted_provider"
+
+        if max_video_size_mb > 0:
+            video_size = _video_media_size_bytes(message)
+            if video_size is not None and video_size > max_video_size_mb * 1024 * 1024:
+                logger.info(
+                    "⏭️ 跳过（视频过大）：消息 %s，视频 %.1f MB 超过上限 %s MB。",
+                    getattr(message, "id", "unknown"),
+                    video_size / 1024 / 1024,
+                    max_video_size_mb,
+                )
+                return "skipped_large_video"
 
         if test_mode_enabled:
             return "simulated_forwarded"
@@ -879,7 +1109,18 @@ async def _forward_single_message(
 
         if message.media:
             download_dir.mkdir(parents=True, exist_ok=True)
-            media_path = await message.download_media(file=str(download_dir))
+            try:
+                media_path = await asyncio.wait_for(
+                    message.download_media(file=str(download_dir)),
+                    timeout=MEDIA_DOWNLOAD_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "⏭️ 跳过（媒体下载超时）：消息 %s 超过 %s 秒未完成下载。",
+                    getattr(message, "id", "unknown"),
+                    MEDIA_DOWNLOAD_TIMEOUT_SECONDS,
+                )
+                return "skipped_media_timeout"
 
         message_id = getattr(message, "id", "unknown")
         entities_for_send = None
@@ -927,11 +1168,18 @@ def _build_empty_stats() -> Dict[str, Any]:
         "skipped_user_blacklist": 0,
         "skipped_service": 0,
         "skipped_no_content": 0,
+        "skipped_large_video": 0,
+        "skipped_media_timeout": 0,
+        "skipped_restricted_provider": 0,
         "skipped_historical_link": 0,
         "skipped_intra_run_link": 0,
         "test_mode_enabled": False,
         "dedup_enabled": False,
         "dedup_115_enabled": True,
+        "dedup_baidu_enabled": True,
+        "dedup_uc_enabled": True,
+        "max_video_size_mb": 0,
+        "enabled_restricted_providers": [],
         "dedup_cache_size": 0,
         "destination_duplicates_detected": 0,
         "destination_duplicates_deleted": 0,
@@ -946,8 +1194,13 @@ async def run_forwarder_once(
     config_store: ConfigStore,
     checkpoint_store: ChannelCheckpointStore,
     logger,
+    stats_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     stats = _build_empty_stats()
+    if stats_sink is not None:
+        # Share the live stats object so a caller that only sees TimeoutError
+        # (asyncio.wait_for) can still record what the run actually did.
+        stats_sink["stats"] = stats
     lock_created = False
     run_start_ts = time.time()
     test_mode_enabled = False
@@ -967,6 +1220,10 @@ async def run_forwarder_once(
         stats["test_mode_enabled"] = test_mode_enabled
         stats["dedup_enabled"] = config.deduplication_enabled
         stats["dedup_115_enabled"] = config.deduplication_115_enabled
+        stats["dedup_baidu_enabled"] = config.deduplication_baidu_enabled
+        stats["dedup_uc_enabled"] = config.deduplication_uc_enabled
+        stats["max_video_size_mb"] = config.max_video_size_mb
+        stats["enabled_restricted_providers"] = sorted(config.enabled_restricted_providers)
         stats["dedup_cache_size"] = config.deduplication_cache_size
         text_replacement_regex_rules = _compile_text_replacement_regex(config.text_replacement_regex, logger)
 
@@ -1093,7 +1350,13 @@ async def run_forwarder_once(
                         continue
 
                     pre_resolved = pre_resolved_url_by_message_obj.get(id(message))
-                    link = _extract_message_dedup_link(message, pre_resolved, config.deduplication_115_enabled)
+                    link = _extract_message_dedup_link(
+                        message,
+                        pre_resolved,
+                        config.deduplication_115_enabled,
+                        config.deduplication_baidu_enabled,
+                        config.deduplication_uc_enabled,
+                    )
                     if not link:
                         messages_without_link_stage1.append(message)
                         continue
@@ -1119,7 +1382,13 @@ async def run_forwarder_once(
                         continue
 
                     pre_resolved = pre_resolved_url_by_message_obj.get(id(message))
-                    link = _extract_message_dedup_link(message, pre_resolved, config.deduplication_115_enabled)
+                    link = _extract_message_dedup_link(
+                        message,
+                        pre_resolved,
+                        config.deduplication_115_enabled,
+                        config.deduplication_baidu_enabled,
+                        config.deduplication_uc_enabled,
+                    )
                     if link and link in historical_links:
                         stats["skipped_historical_link"] += 1
                     else:
@@ -1157,15 +1426,13 @@ async def run_forwarder_once(
                     text_replacement_terms=config.text_replacement_terms,
                     text_replacement_regex_rules=text_replacement_regex_rules,
                     pre_resolved_url=pre_resolved_url_by_message_obj.get(id(message)),
+                    max_video_size_mb=config.max_video_size_mb,
+                    enabled_restricted_providers=config.enabled_restricted_providers,
                 )
 
                 if reason == "forwarded":
                     stats["forwarded_total"] += 1
                     logger.info("✅ 发送成功：源频道 %s，消息 %s", source_channel_id, message_id)
-                    if isinstance(source_channel_id, int):
-                        current_forwarded = forwarded_ids_map.get(source_channel_id, 0)
-                        if message.id > current_forwarded:
-                            forwarded_ids_map[source_channel_id] = message.id
                 elif reason == "simulated_forwarded":
                     stats["simulated_forwarded_total"] += 1
                 elif reason == "skipped_keyword":
@@ -1180,9 +1447,25 @@ async def run_forwarder_once(
                 elif reason == "skipped_no_content":
                     stats["skipped_no_content"] += 1
                     logger.info("⏭️ 跳过（空内容）：源频道 %s，消息 %s", source_channel_id, message_id)
+                elif reason == "skipped_large_video":
+                    stats["skipped_large_video"] += 1
+                elif reason == "skipped_media_timeout":
+                    stats["skipped_media_timeout"] += 1
+                elif reason == "skipped_restricted_provider":
+                    stats["skipped_restricted_provider"] += 1
                 elif reason == "error":
                     stats["error_total"] += 1
                     logger.error("❌ 发送失败：源频道 %s，消息 %s", source_channel_id, message_id)
+
+                # A message that was consciously dealt with — forwarded OR
+                # deliberately skipped — counts as progress. Without this, a
+                # permanently-skipped message (oversized video, blacklisted
+                # keyword) is re-fetched every run forever, and a mid-run abort
+                # rewinds past it. Only genuine send failures ("error") are left
+                # un-advanced so they get retried.
+                if not test_mode_enabled and reason != "error" and isinstance(source_channel_id, int):
+                    if message.id > forwarded_ids_map.get(source_channel_id, 0):
+                        forwarded_ids_map[source_channel_id] = message.id
 
                 processed_count += 1
                 if processed_count % 500 == 0 or processed_count == len(final_messages):
@@ -1235,7 +1518,8 @@ async def run_forwarder_once(
                 )
             logger.info(
                 "📦 最终统计：待处理=%s，成功发送=%s，失败=%s，"
-                "跳过关键词=%s，跳过用户=%s，跳过服务=%s，跳过空内容=%s。",
+                "跳过关键词=%s，跳过用户=%s，跳过服务=%s，跳过空内容=%s，"
+                "跳过大视频=%s，跳过媒体超时=%s，跳过受限网盘=%s。",
                 stats["after_dedup_total"],
                 stats["forwarded_total"],
                 stats["error_total"],
@@ -1243,6 +1527,9 @@ async def run_forwarder_once(
                 stats["skipped_user_blacklist"],
                 stats["skipped_service"],
                 stats["skipped_no_content"],
+                stats["skipped_large_video"],
+                stats["skipped_media_timeout"],
+                stats["skipped_restricted_provider"],
             )
             logger.info("✅ 所有任务已完成。")
             return {
@@ -1345,13 +1632,19 @@ class ForwarderRunner:
         started_at = now_shanghai_iso()
         self._current_started_at = started_at
         timeout_seconds = 600
+        stats_sink: Dict[str, Any] = {}
 
         try:
             panel_settings = self.config_store.build_panel_settings()
             timeout_seconds = max(60, panel_settings.total_timeout_seconds)
 
             result = await asyncio.wait_for(
-                run_forwarder_once(self.config_store, self.checkpoint_store, self.logger),
+                run_forwarder_once(
+                    self.config_store,
+                    self.checkpoint_store,
+                    self.logger,
+                    stats_sink=stats_sink,
+                ),
                 timeout=timeout_seconds,
             )
             finished_at = now_shanghai_iso()
@@ -1377,16 +1670,19 @@ class ForwarderRunner:
         except asyncio.TimeoutError:
             finished_at = now_shanghai_iso()
             message = f"⏱️ 转发任务总超时: {timeout_seconds}s，已自动中止。"
+            # The inner run received CancelledError from wait_for and already ran
+            # its partial-checkpoint handler; surface its real stats instead of
+            # discarding them, so run_history stays diagnosable.
+            timeout_stats = dict(stats_sink.get("stats") or {})
+            timeout_stats["timeout_seconds"] = timeout_seconds
+            timeout_stats["manual_stop_requested"] = False
             payload = {
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "trigger": trigger,
                 "status": "timeout",
                 "message": message,
-                "stats": {
-                    "timeout_seconds": timeout_seconds,
-                    "manual_stop_requested": False,
-                },
+                "stats": timeout_stats,
             }
             self.last_result = payload
             self.history_store.add_record(payload)
@@ -1394,16 +1690,16 @@ class ForwarderRunner:
         except asyncio.CancelledError:
             finished_at = now_shanghai_iso()
             message = "🛑 转发任务已被强制中止。"
+            cancel_stats = dict(stats_sink.get("stats") or {})
+            cancel_stats["cancelled"] = True
+            cancel_stats["manual_stop_requested"] = self._manual_stop_requested
             payload = {
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "trigger": trigger,
                 "status": "cancelled",
                 "message": message,
-                "stats": {
-                    "cancelled": True,
-                    "manual_stop_requested": self._manual_stop_requested,
-                },
+                "stats": cancel_stats,
             }
             self.last_result = payload
             self.history_store.add_record(payload)

@@ -1246,7 +1246,21 @@ async def dashboard(request: Request):
                 "user_id_blacklist_count": len(user_id_blacklist),
                 "deduplication_enabled": raw_config.get("DEDUPLICATION_ENABLED", "false"),
                 "deduplication_115_enabled": raw_config.get("DEDUPLICATION_115_ENABLED", "true"),
+                "deduplication_baidu_enabled": raw_config.get("DEDUPLICATION_BAIDU_ENABLED", "true"),
+                "deduplication_uc_enabled": raw_config.get("DEDUPLICATION_UC_ENABLED", "true"),
                 "deduplication_cache_size": raw_config.get("DEDUPLICATION_CACHE_SIZE", "200"),
+                "max_video_size_mb": raw_config.get("MAX_VIDEO_SIZE_MB", "10"),
+                "allowed_restricted_labels": [
+                    label
+                    for key, label in (
+                        ("ALLOW_XUNLEI_ENABLED", "迅雷"),
+                        ("ALLOW_PAN123_ENABLED", "123网盘"),
+                        ("ALLOW_CAIYUN_ENABLED", "移动云盘"),
+                        ("ALLOW_GUANGYA_ENABLED", "光鸭云盘"),
+                        ("ALLOW_ALIYUN_ENABLED", "阿里云盘"),
+                    )
+                    if raw_config.get(key, "false") == "true"
+                ],
                 "auto_run_enabled": panel_settings.auto_run_enabled,
                 "auto_run_interval_minutes": panel_settings.auto_run_interval_minutes,
                 "total_timeout_seconds": panel_settings.total_timeout_seconds,
@@ -1463,9 +1477,32 @@ async def forward_settings_save(request: Request):
         "USER_ID_BLACKLIST",
         "DEDUPLICATION_ENABLED",
         "DEDUPLICATION_115_ENABLED",
+        "DEDUPLICATION_BAIDU_ENABLED",
+        "DEDUPLICATION_UC_ENABLED",
         "DEDUPLICATION_CACHE_SIZE",
+        "MAX_VIDEO_SIZE_MB",
+        "ALLOW_XUNLEI_ENABLED",
+        "ALLOW_PAN123_ENABLED",
+        "ALLOW_CAIYUN_ENABLED",
+        "ALLOW_GUANGYA_ENABLED",
+        "ALLOW_ALIYUN_ENABLED",
     ]
-    payload = collect_form_payload(form, current, keys, bool_keys={"DEDUPLICATION_ENABLED", "DEDUPLICATION_115_ENABLED"})
+    payload = collect_form_payload(
+        form,
+        current,
+        keys,
+        bool_keys={
+            "DEDUPLICATION_ENABLED",
+            "DEDUPLICATION_115_ENABLED",
+            "DEDUPLICATION_BAIDU_ENABLED",
+            "DEDUPLICATION_UC_ENABLED",
+            "ALLOW_XUNLEI_ENABLED",
+            "ALLOW_PAN123_ENABLED",
+            "ALLOW_CAIYUN_ENABLED",
+            "ALLOW_GUANGYA_ENABLED",
+            "ALLOW_ALIYUN_ENABLED",
+        },
+    )
 
     payload["DESTINATION_CHANNEL"] = destination_channel
     payload["CHANNEL_IDS"] = ",".join(str(cid) for cid in enabled_cids)

@@ -22,8 +22,26 @@ FORWARDER_ENV_KEYS = [
     "USER_ID_BLACKLIST",
     "DEDUPLICATION_ENABLED",
     "DEDUPLICATION_115_ENABLED",
+    "DEDUPLICATION_BAIDU_ENABLED",
+    "DEDUPLICATION_UC_ENABLED",
     "DEDUPLICATION_CACHE_SIZE",
+    "MAX_VIDEO_SIZE_MB",
+    "ALLOW_XUNLEI_ENABLED",
+    "ALLOW_PAN123_ENABLED",
+    "ALLOW_CAIYUN_ENABLED",
+    "ALLOW_GUANGYA_ENABLED",
+    "ALLOW_ALIYUN_ENABLED",
 ]
+
+# Restricted netdisk provider -> its env toggle. Off by default: a message whose
+# only netdisk links come from a disabled provider here is not forwarded.
+RESTRICTED_PROVIDER_ENV_KEYS = {
+    "xunlei": "ALLOW_XUNLEI_ENABLED",
+    "pan123": "ALLOW_PAN123_ENABLED",
+    "caiyun": "ALLOW_CAIYUN_ENABLED",
+    "guangya": "ALLOW_GUANGYA_ENABLED",
+    "aliyun": "ALLOW_ALIYUN_ENABLED",
+}
 
 PANEL_ENV_KEYS = [
     "PANEL_AUTO_RUN_ENABLED",
@@ -60,7 +78,15 @@ DEFAULT_ENV_VALUES = {
     "USER_ID_BLACKLIST": "",
     "DEDUPLICATION_ENABLED": "false",
     "DEDUPLICATION_115_ENABLED": "true",
+    "DEDUPLICATION_BAIDU_ENABLED": "true",
+    "DEDUPLICATION_UC_ENABLED": "true",
     "DEDUPLICATION_CACHE_SIZE": "200",
+    "MAX_VIDEO_SIZE_MB": "10",
+    "ALLOW_XUNLEI_ENABLED": "false",
+    "ALLOW_PAN123_ENABLED": "false",
+    "ALLOW_CAIYUN_ENABLED": "false",
+    "ALLOW_GUANGYA_ENABLED": "false",
+    "ALLOW_ALIYUN_ENABLED": "false",
     "PANEL_AUTO_RUN_ENABLED": "false",
     "PANEL_AUTO_RUN_INTERVAL_MINUTES": "15",
     "PANEL_TOTAL_TIMEOUT_SECONDS": "600",
@@ -99,7 +125,11 @@ class ForwarderConfig:
     user_id_blacklist: Set[int]
     deduplication_enabled: bool
     deduplication_115_enabled: bool
+    deduplication_baidu_enabled: bool
+    deduplication_uc_enabled: bool
     deduplication_cache_size: int
+    max_video_size_mb: int
+    enabled_restricted_providers: Set[str]
 
 
 @dataclass
@@ -144,6 +174,20 @@ def parse_positive_int(value: str, field_name: str, default: int) -> int:
 
     if parsed <= 0:
         raise ValueError(f"{field_name} 必须大于 0。")
+    return parsed
+
+
+def parse_non_negative_int(value: str, field_name: str, default: int) -> int:
+    """Like parse_positive_int but allows 0, used for "0 = 不限制" style limits."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(f"{field_name} 必须是有效整数。") from exc
+
+    if parsed < 0:
+        raise ValueError(f"{field_name} 不能为负数。")
     return parsed
 
 
@@ -312,11 +356,23 @@ class ConfigStore:
             user_id_blacklist=user_id_blacklist,
             deduplication_enabled=parse_bool(raw.get("DEDUPLICATION_ENABLED", "false"), False),
             deduplication_115_enabled=parse_bool(raw.get("DEDUPLICATION_115_ENABLED", "true"), True),
+            deduplication_baidu_enabled=parse_bool(raw.get("DEDUPLICATION_BAIDU_ENABLED", "true"), True),
+            deduplication_uc_enabled=parse_bool(raw.get("DEDUPLICATION_UC_ENABLED", "true"), True),
             deduplication_cache_size=parse_positive_int(
                 raw.get("DEDUPLICATION_CACHE_SIZE", "200"),
                 "DEDUPLICATION_CACHE_SIZE",
                 default=200,
             ),
+            max_video_size_mb=parse_non_negative_int(
+                raw.get("MAX_VIDEO_SIZE_MB", "10"),
+                "MAX_VIDEO_SIZE_MB",
+                default=10,
+            ),
+            enabled_restricted_providers={
+                name
+                for name, key in RESTRICTED_PROVIDER_ENV_KEYS.items()
+                if parse_bool(raw.get(key, "false"), False)
+            },
         )
 
     def build_panel_settings(self) -> PanelSettings:

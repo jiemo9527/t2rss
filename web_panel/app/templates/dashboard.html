@@ -41,7 +41,11 @@
             <li><span>测试模式</span><strong>{{ "已开启" if config_preview.test_mode_enabled else "已关闭" }}</strong></li>
             <li><span>去重开关</span><strong>{{ "true" if config_preview.deduplication_enabled == "true" else "false" }}</strong></li>
             <li><span>115 链接去重</span><strong>{{ "true" if config_preview.deduplication_115_enabled == "true" else "false" }}</strong></li>
+            <li><span>百度链接去重</span><strong>{{ "true" if config_preview.deduplication_baidu_enabled == "true" else "false" }}</strong></li>
+            <li><span>UC 链接去重</span><strong>{{ "true" if config_preview.deduplication_uc_enabled == "true" else "false" }}</strong></li>
             <li><span>去重扫描条数</span><strong>{{ config_preview.deduplication_cache_size }}</strong></li>
+            <li><span>视频大小上限</span><strong>{{ (config_preview.max_video_size_mb ~ " MB") if config_preview.max_video_size_mb != "0" else "不限制" }}</strong></li>
+            <li><span>受限网盘放行</span><strong>{{ config_preview.allowed_restricted_labels | join("、") if config_preview.allowed_restricted_labels else "全部拦截" }}</strong></li>
             <li><span>RSS 订阅</span><strong>{{ "已开启" if config_preview.rss_enabled else "已关闭" }}</strong></li>
             <li><span>RSS 输出条数</span><strong>{{ config_preview.rss_item_limit }} 条</strong></li>
             <li>

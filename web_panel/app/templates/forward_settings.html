@@ -152,6 +152,12 @@
                     <small class="field-hint">目标频道去重时扫描的历史消息条数。</small>
                 </label>
 
+                <label>
+                    MAX_VIDEO_SIZE_MB
+                    <input type="number" min="0" name="MAX_VIDEO_SIZE_MB" value="{{ config.get('MAX_VIDEO_SIZE_MB', '10') }}">
+                    <small class="field-hint">视频大小上限（MB），超过则整条消息跳过不转发；填 0 表示不限制。动图（GIF）不受此限制。</small>
+                </label>
+
                 <label class="checkbox-row">
                     <input type="checkbox" name="DEDUPLICATION_ENABLED" {% if config.get('DEDUPLICATION_ENABLED', 'false') == 'true' %}checked{% endif %}>
                     开启夸克链接去重
@@ -160,8 +166,48 @@
                 <label class="checkbox-row">
                     <input type="checkbox" name="DEDUPLICATION_115_ENABLED" {% if config.get('DEDUPLICATION_115_ENABLED', 'true') == 'true' %}checked{% endif %}>
                     开启115链接去重
-                    <small class="field-hint">需同时开启上方去重开关；同一条消息同时存在夸克和 115 时优先按夸克去重。</small>
                 </label>
+
+                <label class="checkbox-row">
+                    <input type="checkbox" name="DEDUPLICATION_BAIDU_ENABLED" {% if config.get('DEDUPLICATION_BAIDU_ENABLED', 'true') == 'true' %}checked{% endif %}>
+                    开启百度网盘链接去重
+                </label>
+
+                <label class="checkbox-row">
+                    <input type="checkbox" name="DEDUPLICATION_UC_ENABLED" {% if config.get('DEDUPLICATION_UC_ENABLED', 'true') == 'true' %}checked{% endif %}>
+                    开启UC网盘链接去重
+                    <small class="field-hint">以上网盘开关均需同时开启夸克去重总开关；一条消息含多个网盘链接时，按 夸克 &gt; 115 &gt; 百度 &gt; UC 的优先级取最高的一个作为去重依据。</small>
+                </label>
+
+                <div class="field-block">
+                    <strong>受限网盘（默认不转发）</strong>
+                    <small class="field-hint">仅含以下未勾选网盘链接的消息会被整条跳过；勾选后该网盘恢复正常转发。消息若同时含夸克/115/百度/UC 链接，则不受影响。</small>
+
+                    <label class="checkbox-row">
+                        <input type="checkbox" name="ALLOW_XUNLEI_ENABLED" {% if config.get('ALLOW_XUNLEI_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                        允许迅雷网盘
+                    </label>
+
+                    <label class="checkbox-row">
+                        <input type="checkbox" name="ALLOW_PAN123_ENABLED" {% if config.get('ALLOW_PAN123_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                        允许123网盘
+                    </label>
+
+                    <label class="checkbox-row">
+                        <input type="checkbox" name="ALLOW_CAIYUN_ENABLED" {% if config.get('ALLOW_CAIYUN_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                        允许移动云盘
+                    </label>
+
+                    <label class="checkbox-row">
+                        <input type="checkbox" name="ALLOW_GUANGYA_ENABLED" {% if config.get('ALLOW_GUANGYA_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                        允许光鸭云盘
+                    </label>
+
+                    <label class="checkbox-row">
+                        <input type="checkbox" name="ALLOW_ALIYUN_ENABLED" {% if config.get('ALLOW_ALIYUN_ENABLED', 'false') == 'true' %}checked{% endif %}>
+                        允许阿里云盘
+                    </label>
+                </div>
             </div>
             <div class="form-actions">
                 <button type="submit">保存过滤与通道配置</button>
