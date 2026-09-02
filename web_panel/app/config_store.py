@@ -140,6 +140,11 @@ class PanelSettings:
     test_mode_enabled: bool
 
 
+def _normalize_newlines(value: str) -> str:
+    """Collapse CRLF/CR to LF so newline handling is uniform."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def parse_bool(value: str, default: bool = False) -> bool:
     if value is None:
         return default
@@ -316,12 +321,7 @@ class ConfigStore:
             if value is None:
                 merged[key] = ""
                 continue
-
-            text_value = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
-            if key in MULTILINE_ESCAPED_ENV_KEYS:
-                merged[key] = text_value.replace("\n", "\\n")
-            else:
-                merged[key] = text_value.replace("\n", " ")
+            merged[key] = _normalize_newlines(str(value)).strip()
 
         ordered_keys = list(ALL_ENV_KEYS)
         extra_keys = sorted([key for key in merged.keys() if key not in ALL_ENV_KEYS])
@@ -329,7 +329,18 @@ class ConfigStore:
 
         lines = []
         for key in ordered_keys:
-            value = merged.get(key, "")
+            # Encode EVERY key on the way out, not just the ones submitted in
+            # this call. load_raw_config() decodes escaped newlines into real
+            # ones, so a multiline value that was merely carried over unchanged
+            # would be written as several physical lines; every line after the
+            # first is then silently dropped on the next read. That is how any
+            # save -- even one that never touches the field -- used to destroy
+            # all but the first TEXT_REPLACEMENT_REGEX rule.
+            value = _normalize_newlines(str(merged.get(key, "")))
+            if key in MULTILINE_ESCAPED_ENV_KEYS:
+                value = value.replace("\n", "\\n")
+            else:
+                value = value.replace("\n", " ")
             lines.append(f"{key}={value}")
 
         self.env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")

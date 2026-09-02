@@ -304,21 +304,25 @@ curl http://127.0.0.1:8080/health
 
 ### `TEXT_REPLACEMENT_REGEX` is fragile — read before touching it
 
-The forward-settings form **overwrites the regex textarea wholesale**: whatever
-sits in the field at submit time replaces the entire rule set. Saving that page
-with a partially-filled field silently wipes every other rule. This has cost the
-rule set twice, and a third time indirectly — a backup taken *after* a wipe
-captured the broken state, and restoring it wrote 1 rule back over 19.
+**Fixed in `save_raw_config` (config_store.py).** `load_raw_config()` decodes an
+escaped `\n` into a real newline, but the old `save_raw_config()` re-encoded it
+only for keys present in the submitted dict. A multiline value that was merely
+carried over unchanged got written as several physical lines in `config.env`,
+and everything after the first line was silently dropped on the next read. So
+**any** save — setup/RSS, scheduler, admin password — destroyed all but the
+first regex rule, even though those forms never touch the field. Encoding now
+happens for every key on the way out; see
+`web_panel/tests/test_config_roundtrip.py`.
 
-Consequences to respect:
+Remaining constraints:
 
 - `web_panel/data/` is gitignored, so the live rules have **no history**.
   `web_panel/config_presets/text_replacement_rules.json` is the source of truth;
   update it whenever rules change, and restore with
   `web_panel/scripts/restore_text_rules.py` (verifies before writing).
-- Never put a literal `\n` inside a rule. `ConfigStore` joins rules on `\n` when
-  persisting, so a literal `\n` decodes into a real line break and splits one
-  rule into invalid fragments. Use `\s*` / `\s+` for whitespace and newlines.
+- Never put a literal `\n` inside a rule. Rules are persisted joined on `\n`, so
+  a literal `\n` decodes into a real line break and splits one rule into invalid
+  fragments. Use `\s*` / `\s+` for whitespace and newlines.
 - Rules must be verified **after a save/reload round-trip**, not just after
   compiling — a rule can compile fine and still not survive persistence.
 - Promo footers vary segment by segment (`来自` / `频道` / `群组` / `投稿` /
@@ -330,8 +334,10 @@ Consequences to respect:
   `t.me|telegram.me|link3.cc` rule must stay last in the list.
 - `POST /plan-backup/cleanup` does **not** touch `config.env` (it only clears
   downloads, `tmp_*` dirs, a stale lock, session sidecars and uploaded restore
-  zips). If rules vanish around a cleanup, look at the neighbouring
-  `forward-settings/save` or backup-restore call instead.
+  zips).
+- A backup taken while the rules are broken will faithfully capture the broken
+  state; restoring it re-applies the damage. Check the rule count before
+  trusting a restore.
 
 - `cli` branch legacy scripts still use `session_name.session` and text-file checkpoints.
 - `main` web panel uses `t2rss.session` and SQLite checkpoints.
