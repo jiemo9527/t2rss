@@ -78,7 +78,15 @@ Forwarding-related keys:
 - `USER_ID_BLACKLIST`
 - `DEDUPLICATION_ENABLED`
 - `DEDUPLICATION_115_ENABLED`
+- `DEDUPLICATION_BAIDU_ENABLED`
+- `DEDUPLICATION_UC_ENABLED`
 - `DEDUPLICATION_CACHE_SIZE`
+- `MAX_VIDEO_SIZE_MB` (default 10; 0 = unlimited)
+- `ALLOW_XUNLEI_ENABLED`
+- `ALLOW_PAN123_ENABLED`
+- `ALLOW_CAIYUN_ENABLED`
+- `ALLOW_GUANGYA_ENABLED`
+- `ALLOW_ALIYUN_ENABLED`
 
 Panel/security/scheduler keys:
 
@@ -139,18 +147,57 @@ Panel/security/scheduler keys:
    - Optional pre-resolve via Bot for trigger messages (see section 8)
    - Stage 1: dedup repeated links within current batch
    - Stage 2: skip links already found in destination history cache
-8. Forward remaining messages (keyword/user filters, media handling, send)
+8. Forward remaining messages. Per-message gates run in this order:
+   - keyword / user blacklist
+   - restricted netdisk providers (see section 8) -> `skipped_restricted_provider`
+   - `MAX_VIDEO_SIZE_MB` check, read from Telegram metadata **before** any
+     download -> `skipped_large_video`
+   - media download, wrapped in a 180s `asyncio.wait_for`
+     (`MEDIA_DOWNLOAD_TIMEOUT_SECONDS`) -> `skipped_media_timeout`
+   - send with retry, then delete the temp file in `finally`
 9. Checkpoint update behavior:
    - Normal success: update to `latest_ids_map` (max fetched per source)
-   - Cancel/error: partial update to `forwarded_ids_map` (max actually forwarded)
+   - Cancel/timeout/error: partial update to `forwarded_ids_map`
+   - `forwarded_ids_map` advances for **every outcome except `error`** — a
+     deliberately skipped message counts as progress. Only genuine send failures
+     hold position so they are retried. Test mode advances nothing.
 10. Remove lock in `finally`
 
 ## 8) Dedup + Bot Link Expansion Rules
 
-Current dedup key target priority:
+Current dedup key target priority: **quark > 115 > baidu > uc**.
 
-- Quark wins if the message contains any `https://pan.quark.cn/s/<token>` in text, blue hyperlink entities, button URLs, or a bot-resolved URL.
-- 115 is used only when `DEDUPLICATION_115_ENABLED=true` and no Quark link exists: `https://115cdn.com/s/<token>` (ignore query strings such as `password=...` and access-code fragments such as `#访问码：...`) or `https://hdhive.com/resource/115/<token>`.
+A message yields exactly ONE dedup key — the highest-priority provider present.
+Links are read from message text, `MessageEntityTextUrl` blue hyperlinks, button
+URLs, and bot-resolved URLs. Query strings and fragments (`?pwd=`, `?password=`,
+`?public=1`, `#访问码：...`) are stripped from the key.
+
+| Priority | Provider | Matched | Normalized key | Toggle |
+|---|---|---|---|---|
+| 1 | Quark | `pan.quark.cn/s/<token>` | unchanged | always on |
+| 2 | 115 | `115cdn.com/s/<token>`, `hdhive.com/resource/115/<token>` | kept as separate keys | `DEDUPLICATION_115_ENABLED` |
+| 3 | Baidu | `pan.baidu.com/s/<token>`, `pan.baidu.com/share/init?surl=<token>` | `/s/<token>`; `surl=X` folds to `/s/1X` | `DEDUPLICATION_BAIDU_ENABLED` |
+| 4 | UC | `drive.uc.cn/s/<token>`, `fast.uc.cn/s/<token>` | collapsed to `drive.uc.cn/s/<token>` | `DEDUPLICATION_UC_ENABLED` |
+
+### Restricted netdisk providers (not forwarded by default)
+
+These are a *forwarding* filter, independent of dedup. All default to `false`:
+
+| Provider | Matched | Toggle |
+|---|---|---|
+| 迅雷 | `pan.xunlei.com/s/` | `ALLOW_XUNLEI_ENABLED` |
+| 123网盘 | `123pan.com/s/`, `123<3 digits>.com/s/` (domain rotates: 123684/123865/123912) | `ALLOW_PAN123_ENABLED` |
+| 移动云盘 | `yun.139.com/shareweb/#/w/i/` | `ALLOW_CAIYUN_ENABLED` |
+| 光鸭云盘 | `guangyapan.com/s/` | `ALLOW_GUANGYA_ENABLED` |
+| 阿里云盘 | `alipan.com/s/`, `aliyundrive.com/s/` | `ALLOW_ALIYUN_ENABLED` |
+
+A message is skipped (`skipped_restricted_provider`) **only when every netdisk
+link it carries belongs to a disabled restricted provider**. Messages that also
+contain a quark/115/baidu/uc link — or a link from an enabled restricted
+provider — still forward, and link-free messages are unaffected.
+
+`has_allowed_netdisk_link()` deliberately evaluates with all dedup toggles
+forced ON, so narrowing *dedup* scope can never change *forwarding* eligibility.
 
 When `DEDUPLICATION_ENABLED=true`:
 
@@ -211,9 +258,17 @@ When editing code, preserve these guarantees unless intentionally migrating beha
 
 - Single-instance lock behavior
 - Checkpoint consistency and monotonic progression semantics
+- Skipped messages advance the checkpoint; only `error` holds position. Reverting
+  this reintroduces the self-perpetuating loop where a permanently-skipped
+  message is re-fetched on every run forever.
+- Every network await that can block indefinitely (notably `download_media`)
+  stays bounded by a timeout, so one stalled item cannot consume the whole
+  `PANEL_TOTAL_TIMEOUT_SECONDS` budget.
 - Media temp file cleanup in `finally`
 - Non-blocking async path in forwarding loops
 - Clear skip-reason metrics and logs
+- Timeout/cancel `run_history` records carry the run's real stats (via the
+  `stats_sink` shared dict), not a bare status marker
 - Backward-safe startup migrations (legacy session / txt checkpoints)
 
 If changing dedup/filter behavior:
