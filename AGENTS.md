@@ -27,6 +27,12 @@ It is updated for the current codebase status (`main` keeps `web_panel`; legacy 
   - `web_panel/app/backup_manager.py`: backup create/delete/restore
   - `web_panel/app/templates/`: dashboard/setup/forward-settings/plan-backup pages
   - `web_panel/app/static/style.css`: panel styles
+  - `web_panel/config_presets/text_replacement_rules.json`: versioned
+    `TEXT_REPLACEMENT_REGEX` rule set (data/ is gitignored, so this is the only
+    history the rules have)
+  - `web_panel/scripts/restore_text_rules.py`: restore those rules into a running
+    container, refusing to write unless they compile and survive the config
+    encode/decode round-trip
   - `web_panel/tools/create_session.py`: creates `t2rss.session` in container data dir
   - `web_panel/docker-compose.yml`, `web_panel/Dockerfile`: container runtime
   - `web_panel/data/`: runtime state (config, db, logs, session, backups)
@@ -295,6 +301,37 @@ curl http://127.0.0.1:8080/health
 ```
 
 ## 15) Known Drift / Compatibility Notes
+
+### `TEXT_REPLACEMENT_REGEX` is fragile — read before touching it
+
+The forward-settings form **overwrites the regex textarea wholesale**: whatever
+sits in the field at submit time replaces the entire rule set. Saving that page
+with a partially-filled field silently wipes every other rule. This has cost the
+rule set twice, and a third time indirectly — a backup taken *after* a wipe
+captured the broken state, and restoring it wrote 1 rule back over 19.
+
+Consequences to respect:
+
+- `web_panel/data/` is gitignored, so the live rules have **no history**.
+  `web_panel/config_presets/text_replacement_rules.json` is the source of truth;
+  update it whenever rules change, and restore with
+  `web_panel/scripts/restore_text_rules.py` (verifies before writing).
+- Never put a literal `\n` inside a rule. `ConfigStore` joins rules on `\n` when
+  persisting, so a literal `\n` decodes into a real line break and splits one
+  rule into invalid fragments. Use `\s*` / `\s+` for whitespace and newlines.
+- Rules must be verified **after a save/reload round-trip**, not just after
+  compiling — a rule can compile fine and still not survive persistence.
+- Promo footers vary segment by segment (`来自` / `频道` / `群组` / `投稿` /
+  `资源搜索` / `反馈合作` appear in different combinations). Prefer standalone
+  per-label rules over one rule that hard-codes a fixed multi-segment sequence,
+  and require an `@handle` so ordinary prose mentioning 频道/群组 is not deleted.
+- Some promo URLs are only visible **after entity materialization** (a 1-char
+  hidden hyperlink becomes a bare URL glued to the text). The end-anchored
+  `t.me|telegram.me|link3.cc` rule must stay last in the list.
+- `POST /plan-backup/cleanup` does **not** touch `config.env` (it only clears
+  downloads, `tmp_*` dirs, a stale lock, session sidecars and uploaded restore
+  zips). If rules vanish around a cleanup, look at the neighbouring
+  `forward-settings/save` or backup-restore call instead.
 
 - `cli` branch legacy scripts still use `session_name.session` and text-file checkpoints.
 - `main` web panel uses `t2rss.session` and SQLite checkpoints.

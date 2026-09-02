@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Canonical TEXT_REPLACEMENT_REGEX rule set for the t2rss forwarder.",
+    "",
+    "WHY THIS FILE EXISTS: web_panel/data/ is gitignored, so the live rules have",
+    "no version history. They have been silently wiped twice by saving the",
+    "forward-settings form with a partially-filled regex textarea (the field is",
+    "overwrite-in-full), and once more by restoring a backup that had captured the",
+    "already-broken state. This file is the source of truth to restore from.",
+    "",
+    "RULE AUTHORING CONSTRAINT: never put a literal \\n inside a rule. ConfigStore",
+    "encodes the rule list by joining on \\n, so a literal \\n is decoded back into a",
+    "real line break and splits one rule into invalid fragments. Use \\s* / \\s+.",
+    "",
+    "Restore with: scripts/restore_text_rules.py (see its docstring)."
+  ],
+  "rules": [
+    "\\s*🎉\\s*来自：\\S+(?:\\s*\\([^)]*\\))?\\s*📢\\s*频道：@?\\S+(?:\\s*\\([^)]*\\))?(?:\\s+防失联\\s*@\\S+(?:\\s*\\([^)]*\\))?)?(?:\\s*👥\\s*群组：@?\\S+(?:\\s*\\([^)]*\\))?)?(?:\\s*资源搜索：@\\S+(?:\\s*\\([^)]*\\))?)?(?:\\s*反馈合作：@\\S+(?:\\s*\\([^)]*\\))?)?\\s*",
+    "\\.?\\s*📢\\s*国外影视发布频道：@\\S+(?:\\s*\\([^)]*\\))?\\s*📢\\s*此频道只发国内影视：@\\S+(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*📢\\s*频道：\\S+(?:\\s*\\([^)]*\\))?\\s*👥\\s*群组：@\\S+(?:\\s*\\([^)]*\\))?\\s*🤖\\s*投稿：@\\S+(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*⬇️\\s*【评论区可搜索】(?:\\s*\\([^)]*\\))?\\s*\\|?\\s*🔍\\s*网盘专搜(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*🧰\\s*社工导航(?:\\s*\\([^)]*\\))?\\s*\\|?\\s*🛍\\s*全国抵押车(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*📢\\s*频道：精准猫咪网盘资源(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*🔔\\s*Twitter(?:\\s*\\([^)]*\\))?\\s*👥\\s*频道(?:\\s*\\([^)]*\\))?\\s*💬\\s*群组(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*📢\\s*频道(?:\\s*\\([^)]*\\))?\\s*✨\\s*👥\\s*群组(?:\\s*\\([^)]*\\))?\\s*✨\\s*📝\\s*网址(?:\\s*\\([^)]*\\))?\\s*✨\\s*💬\\s*私聊/合作(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*⚠️\\s*版权：版权反馈/DMCA(?:\\s*\\([^)]*\\))?\\s*📢\\s*频道(?:\\s*\\([^)]*\\))?\\s*👥\\s*群组(?:\\s*\\([^)]*\\))?\\s*🔍\\s*投稿/搜索(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*👥\\s*群组：@BooksRealm(?:\\s*\\([^)]*\\))?\\s*",
+    "\\s*🤖\\s*投稿：@\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*🔍\\s*投稿/搜索：@\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*资源搜索：@\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*反馈合作：@\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*🎉\\s*来自：\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*📢\\s*频道：@\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*👥\\s*群组：@\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*防失联\\s*@\\S+(?:\\s*\\((?:[^)]*\\))?)?\\s*",
+    "\\s*https?://(?:t\\.me|telegram\\.me|link3\\.cc)/\\S*\\s*$"
+  ]
+}
