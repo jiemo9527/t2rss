@@ -3,6 +3,7 @@ import collections
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from typing import Any, Dict, List, Optional, Set
@@ -1191,6 +1192,39 @@ def _build_empty_stats() -> Dict[str, Any]:
     }
 
 
+# Identifies THIS process instance. Written into the lock file so a lock left
+# behind by a container that died mid-run can be told apart from a live one:
+# PID alone is useless in a container, where the app is always PID 1.
+_BOOT_ID = uuid.uuid4().hex
+
+
+def _lock_payload() -> str:
+    return f"{_BOOT_ID}:{os.getpid()}"
+
+
+def _stale_lock_reason(lock_file: Path) -> Optional[str]:
+    """Return why the lock is stale, or None if it belongs to this live process.
+
+    Locks written by older builds hold a bare PID and carry no boot id; those
+    are treated as stale, because the only process that could still legitimately
+    hold one is this very process, which would have written the new format.
+    """
+    try:
+        content = lock_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "锁文件无法读取"
+
+    if not content:
+        return "锁文件为空"
+
+    boot_id, _, pid_text = content.partition(":")
+    if not pid_text:
+        return f"旧格式锁（PID {boot_id}），来自已结束的进程"
+    if boot_id != _BOOT_ID:
+        return f"来自其他容器实例（{boot_id[:8]}…）"
+    return None
+
+
 def _clamp_checkpoints_below_failures(
     candidate_ids: Dict[int, int],
     failed_ids: Dict[int, int],
@@ -1292,15 +1326,27 @@ async def run_forwarder_once(
         stats["source_channel_count"] = len(source_channel_ids)
         logger.info("📡 程序将从以下源频道ID进行转发: %s", source_channel_ids)
 
+        # The lock records this container's boot id, not just a PID. PID 1 is
+        # reused by every container start, so a lock left behind by a container
+        # that died mid-run would otherwise look permanently "held" and wedge
+        # the forwarder forever (every subsequent run returns "skipped").
+        # A lock whose boot id differs from ours is stale by definition.
         if config_store.lock_file.exists():
-            stats["duration_seconds"] = round(time.time() - run_start_ts, 2)
-            return {
-                "status": "skipped",
-                "message": "检测到锁文件，可能已有任务正在运行。",
-                "stats": stats,
-            }
+            stale_reason = _stale_lock_reason(config_store.lock_file)
+            if stale_reason is None:
+                stats["duration_seconds"] = round(time.time() - run_start_ts, 2)
+                return {
+                    "status": "skipped",
+                    "message": "检测到锁文件，可能已有任务正在运行。",
+                    "stats": stats,
+                }
+            logger.warning("🔓 检测到陈旧锁文件（%s），已自动清除并继续。", stale_reason)
+            try:
+                config_store.lock_file.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("移除陈旧锁文件失败: %s", config_store.lock_file)
 
-        config_store.lock_file.write_text(str(os.getpid()), encoding="utf-8")
+        config_store.lock_file.write_text(_lock_payload(), encoding="utf-8")
         lock_created = True
 
         async with TelegramClient(str(config_store.session_base_path), int(config.api_id), config.api_hash) as client:

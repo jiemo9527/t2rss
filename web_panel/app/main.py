@@ -118,12 +118,35 @@ async def on_startup() -> None:
         logger.info("已将旧版 last_id 文本记录迁移到数据库，共 %s 条。", migrated)
     _prune_run_history_on_startup()
     _reconcile_source_config_on_startup()
+    _clear_stale_forwarder_lock()
     await runner.start()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await runner.stop()
+
+
+def _clear_stale_forwarder_lock() -> None:
+    """Drop a lock left behind by a container that died mid-run.
+
+    Nothing can legitimately hold the lock at startup: the runner has not begun
+    and any previous holder died with the old container. Leaving it in place
+    wedges the forwarder permanently, because the run guard only checks that the
+    file exists (and PID 1 always "exists" inside a container).
+    """
+    lock_file = config_store.lock_file
+    if not lock_file.exists():
+        return
+    try:
+        content = lock_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        content = "<unreadable>"
+    try:
+        lock_file.unlink(missing_ok=True)
+        logger.warning("启动时清除了残留的转发锁文件（内容: %s）。", content or "<empty>")
+    except OSError:
+        logger.warning("启动时无法移除残留锁文件: %s", lock_file)
 
 
 def _prune_run_history_on_startup() -> None:
