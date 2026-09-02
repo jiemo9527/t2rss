@@ -1157,6 +1157,7 @@ def _build_empty_stats() -> Dict[str, Any]:
         "per_channel_last_id_before": {},
         "per_channel_last_id_after": {},
         "per_channel_fetched": {},
+        "fetch_failed_channels": {},
         "messages_collected_total": 0,
         "fetched_total": 0,
         "before_dedup_total": 0,
@@ -1190,6 +1191,31 @@ def _build_empty_stats() -> Dict[str, Any]:
     }
 
 
+def _clamp_checkpoints_below_failures(
+    candidate_ids: Dict[int, int],
+    failed_ids: Dict[int, int],
+) -> Dict[int, int]:
+    """Never let a checkpoint advance past a message that failed to send.
+
+    `candidate_ids` is what we would like to store (max fetched, or the highest
+    successfully handled id). For any channel that had a send failure, the
+    checkpoint is pulled back to just below the OLDEST failed id, so that
+    message is re-fetched and retried on the next run instead of being skipped
+    forever. Channels without failures are unaffected.
+    """
+    if not failed_ids:
+        return dict(candidate_ids)
+
+    clamped: Dict[int, int] = {}
+    for channel_id, last_id in candidate_ids.items():
+        blocked_at = failed_ids.get(channel_id)
+        if blocked_at is not None:
+            last_id = min(last_id, blocked_at - 1)
+        if last_id > 0:
+            clamped[channel_id] = last_id
+    return clamped
+
+
 async def run_forwarder_once(
     config_store: ConfigStore,
     checkpoint_store: ChannelCheckpointStore,
@@ -1207,6 +1233,7 @@ async def run_forwarder_once(
     source_channel_ids: List[int] = []
     latest_ids_map: Dict[int, int] = {}
     forwarded_ids_map: Dict[int, int] = {}
+    failed_ids_map: Dict[int, int] = {}
     channel_by_message_obj: Dict[int, int] = {}
     bot_link_cache: Dict[str, Optional[str]] = {}
     pre_resolved_url_by_message_obj: Dict[int, str] = {}
@@ -1296,7 +1323,20 @@ async def run_forwarder_once(
 
                 logger.info("📥 正在从频道 %s 收集自 ID %s 以来的新消息...", channel_id, last_id + 1)
 
-                channel_messages = [msg async for msg in client.iter_messages(channel_id, min_id=last_id)]
+                # One unreachable source (private/banned/deleted, or a transient
+                # network error) must not abort the whole cycle: without this
+                # guard the exception propagates out of the loop and every
+                # channel after it is never polled, so nothing is forwarded.
+                try:
+                    channel_messages = [msg async for msg in client.iter_messages(channel_id, min_id=last_id)]
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    stats["per_channel_fetched"][str(channel_id)] = 0
+                    stats["fetch_failed_channels"][str(channel_id)] = str(exc)
+                    logger.warning("⚠️ 频道 %s 拉取失败，已跳过该源：%s", channel_id, exc)
+                    continue
+
                 fetched_count = len(channel_messages)
                 stats["per_channel_fetched"][str(channel_id)] = fetched_count
                 stats["fetched_total"] += fetched_count
@@ -1458,13 +1498,17 @@ async def run_forwarder_once(
                     logger.error("❌ 发送失败：源频道 %s，消息 %s", source_channel_id, message_id)
 
                 # A message that was consciously dealt with — forwarded OR
-                # deliberately skipped — counts as progress. Without this, a
-                # permanently-skipped message (oversized video, blacklisted
-                # keyword) is re-fetched every run forever, and a mid-run abort
-                # rewinds past it. Only genuine send failures ("error") are left
-                # un-advanced so they get retried.
-                if not test_mode_enabled and reason != "error" and isinstance(source_channel_id, int):
-                    if message.id > forwarded_ids_map.get(source_channel_id, 0):
+                # deliberately skipped — counts as progress. Only genuine send
+                # failures hold position, and only for their own channel: a
+                # later success must not drag the checkpoint past an earlier
+                # failure, so track the lowest failed id per channel and clamp
+                # below it when writing.
+                if not test_mode_enabled and isinstance(source_channel_id, int):
+                    if reason == "error":
+                        current_block = failed_ids_map.get(source_channel_id)
+                        if current_block is None or message.id < current_block:
+                            failed_ids_map[source_channel_id] = message.id
+                    elif message.id > forwarded_ids_map.get(source_channel_id, 0):
                         forwarded_ids_map[source_channel_id] = message.id
 
                 processed_count += 1
@@ -1480,11 +1524,21 @@ async def run_forwarder_once(
                     await asyncio.sleep(SEND_INTERVAL_SECONDS)
 
             if test_mode_enabled:
+                effective_ids_map: Dict[int, int] = {}
                 stats["checkpoint_updated"] = False
                 logger.info("🧪 测试模式开启：已跳过真实发送后的断点更新。")
             else:
-                checkpoint_store.bulk_update(latest_ids_map)
+                effective_ids_map = _clamp_checkpoints_below_failures(latest_ids_map, failed_ids_map)
+                checkpoint_store.bulk_update(effective_ids_map)
                 stats["checkpoint_updated"] = True
+                if failed_ids_map:
+                    stats["checkpoint_held_back_channels"] = {
+                        str(cid): mid for cid, mid in sorted(failed_ids_map.items())
+                    }
+                    logger.warning(
+                        "⚠️ %s 个来源存在发送失败，其断点已保持在失败消息之前以便重试。",
+                        len(failed_ids_map),
+                    )
                 logger.info("💾 --- 更新所有频道的 last_id 到数据库 ---")
                 logger.info("✅ 断点已更新到数据库。")
 
@@ -1493,7 +1547,7 @@ async def run_forwarder_once(
                 if test_mode_enabled:
                     new_last_id = old_last_id
                 else:
-                    new_last_id = int(latest_ids_map.get(channel_id, old_last_id))
+                    new_last_id = int(effective_ids_map.get(channel_id, old_last_id))
                 stats["per_channel_last_id_after"][str(channel_id)] = new_last_id
 
             stats["duration_seconds"] = round(time.time() - run_start_ts, 2)
@@ -1540,14 +1594,15 @@ async def run_forwarder_once(
 
     except asyncio.CancelledError:
         if not test_mode_enabled and forwarded_ids_map:
-            checkpoint_store.bulk_update(forwarded_ids_map)
+            partial_ids_map = _clamp_checkpoints_below_failures(forwarded_ids_map, failed_ids_map)
+            checkpoint_store.bulk_update(partial_ids_map)
             stats["checkpoint_updated"] = True
             stats["partial_checkpoint_updated"] = True
             logger.warning("⚠️ 任务中止：已将断点更新到已转发的最后消息 ID。")
 
             for channel_id in source_channel_ids:
                 old_last_id = int(stats["per_channel_last_id_before"].get(str(channel_id), 0))
-                new_last_id = int(forwarded_ids_map.get(channel_id, old_last_id))
+                new_last_id = int(partial_ids_map.get(channel_id, old_last_id))
                 stats["per_channel_last_id_after"][str(channel_id)] = new_last_id
 
         stats["duration_seconds"] = round(time.time() - run_start_ts, 2)
@@ -1555,14 +1610,15 @@ async def run_forwarder_once(
 
     except Exception as exc:
         if not test_mode_enabled and forwarded_ids_map:
-            checkpoint_store.bulk_update(forwarded_ids_map)
+            partial_ids_map = _clamp_checkpoints_below_failures(forwarded_ids_map, failed_ids_map)
+            checkpoint_store.bulk_update(partial_ids_map)
             stats["checkpoint_updated"] = True
             stats["partial_checkpoint_updated"] = True
             logger.warning("⚠️ 任务异常中断：已将断点更新到已转发的最后消息 ID。")
 
             for channel_id in source_channel_ids:
                 old_last_id = int(stats["per_channel_last_id_before"].get(str(channel_id), 0))
-                new_last_id = int(forwarded_ids_map.get(channel_id, old_last_id))
+                new_last_id = int(partial_ids_map.get(channel_id, old_last_id))
                 stats["per_channel_last_id_after"][str(channel_id)] = new_last_id
 
         logger.exception("❌ 转发任务执行失败: %s", exc)
