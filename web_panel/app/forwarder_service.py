@@ -47,6 +47,20 @@ SEND_RETRY_BASE_DELAY_SECONDS = 2
 SEND_INTERVAL_SECONDS = 3
 MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 180
 
+# A message whose send keeps failing holds its channel's checkpoint so it can be
+# retried. That is correct for transient failures, but a permanently broken
+# message (Telegram refuses to serve its media, the file is gone from its DC,
+# ...) would otherwise pin the checkpoint forever: every scheduled run re-fetches
+# the same backlog, retries the same message, fails again, and never advances.
+# After this many *confirmed* failures the message is given up on and the
+# checkpoint is allowed past it.
+#
+# "Confirmed" means the failing run forwarded at least one other message, i.e.
+# the client, session and network were demonstrably working — so the failure is
+# attributable to this message. A run where nothing succeeded (Telegram outage,
+# FloodWait, dead uplink) does not burn the budget.
+MESSAGE_FAILURE_GIVE_UP_ATTEMPTS = 5
+
 
 def _video_media_size_bytes(message) -> Optional[int]:
     """Return the byte size when the message carries a real video, else None.
@@ -1189,6 +1203,8 @@ def _build_empty_stats() -> Dict[str, Any]:
         "partial_checkpoint_updated": False,
         "timeout_seconds": 0,
         "error_total": 0,
+        "given_up_total": 0,
+        "given_up_messages": {},
     }
 
 
@@ -1496,6 +1512,7 @@ async def run_forwarder_once(
             logger.info("✅ 过滤完成，最终有 %s 条消息准备处理。", len(final_messages))
 
             processed_count = 0
+            error_records: List[Dict[str, Any]] = []
             for message in final_messages:
                 source_channel_id = channel_by_message_obj.get(id(message), "unknown")
                 message_id = getattr(message, "id", "unknown")
@@ -1549,13 +1566,24 @@ async def run_forwarder_once(
                 # later success must not drag the checkpoint past an earlier
                 # failure, so track the lowest failed id per channel and clamp
                 # below it when writing.
+                #
+                # Failures are not resolved here: whether a failure still blocks
+                # the checkpoint depends on how many times this same message has
+                # already failed in earlier runs, and on whether THIS run proved
+                # the pipeline healthy by forwarding something else. Both are
+                # only known after the loop, so record and decide below.
                 if not test_mode_enabled and isinstance(source_channel_id, int):
                     if reason == "error":
-                        current_block = failed_ids_map.get(source_channel_id)
-                        if current_block is None or message.id < current_block:
-                            failed_ids_map[source_channel_id] = message.id
-                    elif message.id > forwarded_ids_map.get(source_channel_id, 0):
-                        forwarded_ids_map[source_channel_id] = message.id
+                        error_records.append(
+                            {"channel_id": source_channel_id, "message_id": int(message.id)}
+                        )
+                    else:
+                        if message.id > forwarded_ids_map.get(source_channel_id, 0):
+                            forwarded_ids_map[source_channel_id] = message.id
+                        if reason == "forwarded":
+                            # A previously-failing message that finally went
+                            # through must not keep its strike count.
+                            checkpoint_store.clear_failure(source_channel_id, int(message.id))
 
                 processed_count += 1
                 if processed_count % 500 == 0 or processed_count == len(final_messages):
@@ -1569,6 +1597,44 @@ async def run_forwarder_once(
                     logger.info("⏱️ 发送间隔等待 %s 秒，避免风控。", SEND_INTERVAL_SECONDS)
                     await asyncio.sleep(SEND_INTERVAL_SECONDS)
 
+            # Resolve this run's send failures into blocking vs given-up.
+            # A failure only blocks the checkpoint while the message still has
+            # retry budget left. Once a message has failed on
+            # MESSAGE_FAILURE_GIVE_UP_ATTEMPTS runs that were otherwise healthy,
+            # it is abandoned so the checkpoint can move past it — otherwise a
+            # single permanently-unfetchable message pins the source forever and
+            # every run re-processes the same backlog.
+            if not test_mode_enabled and error_records:
+                pipeline_healthy = stats["forwarded_total"] > 0
+                given_up: Dict[str, int] = {}
+                for record in error_records:
+                    failed_channel_id = record["channel_id"]
+                    failed_message_id = record["message_id"]
+                    counts = checkpoint_store.record_failure(
+                        failed_channel_id,
+                        failed_message_id,
+                        confirmed=pipeline_healthy,
+                    )
+                    if counts["confirmed_count"] >= MESSAGE_FAILURE_GIVE_UP_ATTEMPTS:
+                        given_up[f"{failed_channel_id}:{failed_message_id}"] = counts["confirmed_count"]
+                        logger.error(
+                            "🛑 消息 %s（源频道 %s）已连续 %s 次发送失败，放弃该消息并放行断点。",
+                            failed_message_id,
+                            failed_channel_id,
+                            counts["confirmed_count"],
+                        )
+                        if failed_message_id > forwarded_ids_map.get(failed_channel_id, 0):
+                            forwarded_ids_map[failed_channel_id] = failed_message_id
+                        continue
+
+                    current_block = failed_ids_map.get(failed_channel_id)
+                    if current_block is None or failed_message_id < current_block:
+                        failed_ids_map[failed_channel_id] = failed_message_id
+
+                if given_up:
+                    stats["given_up_messages"] = given_up
+                    stats["given_up_total"] = len(given_up)
+
             if test_mode_enabled:
                 effective_ids_map: Dict[int, int] = {}
                 stats["checkpoint_updated"] = False
@@ -1576,6 +1642,7 @@ async def run_forwarder_once(
             else:
                 effective_ids_map = _clamp_checkpoints_below_failures(latest_ids_map, failed_ids_map)
                 checkpoint_store.bulk_update(effective_ids_map)
+                checkpoint_store.prune_failures_below(effective_ids_map)
                 stats["checkpoint_updated"] = True
                 if failed_ids_map:
                     stats["checkpoint_held_back_channels"] = {
@@ -1642,6 +1709,7 @@ async def run_forwarder_once(
         if not test_mode_enabled and forwarded_ids_map:
             partial_ids_map = _clamp_checkpoints_below_failures(forwarded_ids_map, failed_ids_map)
             checkpoint_store.bulk_update(partial_ids_map)
+            checkpoint_store.prune_failures_below(partial_ids_map)
             stats["checkpoint_updated"] = True
             stats["partial_checkpoint_updated"] = True
             logger.warning("⚠️ 任务中止：已将断点更新到已转发的最后消息 ID。")
@@ -1658,6 +1726,7 @@ async def run_forwarder_once(
         if not test_mode_enabled and forwarded_ids_map:
             partial_ids_map = _clamp_checkpoints_below_failures(forwarded_ids_map, failed_ids_map)
             checkpoint_store.bulk_update(partial_ids_map)
+            checkpoint_store.prune_failures_below(partial_ids_map)
             stats["checkpoint_updated"] = True
             stats["partial_checkpoint_updated"] = True
             logger.warning("⚠️ 任务异常中断：已将断点更新到已转发的最后消息 ID。")

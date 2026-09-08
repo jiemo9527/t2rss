@@ -23,7 +23,152 @@ class ChannelCheckpointStore:
                 )
                 """
             )
+            # Per-message send-failure ledger. Without it a message that can
+            # never be sent (e.g. Telegram refuses to serve its media file)
+            # holds its channel checkpoint forever, so every 2-minute run
+            # re-fetches the same backlog and retries the same message
+            # endlessly.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS message_failures (
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    confirmed_count INTEGER NOT NULL DEFAULT 0,
+                    first_failed_at TEXT NOT NULL,
+                    last_failed_at TEXT NOT NULL,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (channel_id, message_id)
+                )
+                """
+            )
             connection.commit()
+
+    # ------------------------------------------------------------------
+    # Per-message failure ledger
+    # ------------------------------------------------------------------
+
+    def get_failure_counts(self, channel_id: int) -> Dict[int, Dict[str, Any]]:
+        """Return {message_id: {attempt_count, confirmed_count}} for a channel."""
+        with sqlite3.connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT message_id, attempt_count, confirmed_count
+                FROM message_failures
+                WHERE channel_id = ?
+                """,
+                (int(channel_id),),
+            ).fetchall()
+
+        return {
+            int(row[0]): {"attempt_count": int(row[1]), "confirmed_count": int(row[2])}
+            for row in rows
+        }
+
+    def record_failure(
+        self,
+        channel_id: int,
+        message_id: int,
+        confirmed: bool,
+        error: str = "",
+    ) -> Dict[str, int]:
+        """Bump a message's failure counters and return the new counts.
+
+        `confirmed` means the run proved the pipeline was otherwise healthy
+        (it forwarded at least one other message), so this failure is
+        attributable to the message itself rather than to a network/Telegram
+        outage. Only confirmed failures count towards giving up quickly.
+        """
+        channel_id = int(channel_id)
+        message_id = int(message_id)
+        stamp = now_shanghai_iso()
+        error_text = str(error or "")[:500]
+
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO message_failures (
+                    channel_id, message_id, attempt_count, confirmed_count,
+                    first_failed_at, last_failed_at, last_error
+                )
+                VALUES (?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(channel_id, message_id)
+                DO UPDATE SET
+                    attempt_count = attempt_count + 1,
+                    confirmed_count = confirmed_count + ?,
+                    last_failed_at = excluded.last_failed_at,
+                    last_error = excluded.last_error
+                """,
+                (
+                    channel_id,
+                    message_id,
+                    1 if confirmed else 0,
+                    stamp,
+                    stamp,
+                    error_text,
+                    1 if confirmed else 0,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT attempt_count, confirmed_count
+                FROM message_failures
+                WHERE channel_id = ? AND message_id = ?
+                """,
+                (channel_id, message_id),
+            ).fetchone()
+            connection.commit()
+
+        return {"attempt_count": int(row[0]), "confirmed_count": int(row[1])}
+
+    def clear_failure(self, channel_id: int, message_id: int) -> None:
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "DELETE FROM message_failures WHERE channel_id = ? AND message_id = ?",
+                (int(channel_id), int(message_id)),
+            )
+            connection.commit()
+
+    def prune_failures_below(self, channel_last_ids: Dict[int, int]) -> int:
+        """Drop ledger rows the checkpoint has already moved past."""
+        if not channel_last_ids:
+            return 0
+
+        removed = 0
+        with sqlite3.connect(self.db_path) as connection:
+            for channel_id, last_id in channel_last_ids.items():
+                cursor = connection.execute(
+                    "DELETE FROM message_failures WHERE channel_id = ? AND message_id <= ?",
+                    (int(channel_id), int(last_id)),
+                )
+                removed += cursor.rowcount or 0
+            connection.commit()
+        return removed
+
+    def list_failures(self) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT channel_id, message_id, attempt_count, confirmed_count,
+                       first_failed_at, last_failed_at, last_error
+                FROM message_failures
+                ORDER BY channel_id ASC, message_id ASC
+                """
+            ).fetchall()
+
+        return [
+            {
+                "channel_id": int(row["channel_id"]),
+                "message_id": int(row["message_id"]),
+                "attempt_count": int(row["attempt_count"]),
+                "confirmed_count": int(row["confirmed_count"]),
+                "first_failed_at": normalize_to_shanghai_iso(row["first_failed_at"]),
+                "last_failed_at": normalize_to_shanghai_iso(row["last_failed_at"]),
+                "last_error": str(row["last_error"] or ""),
+            }
+            for row in rows
+        ]
 
     def migrate_from_files(self, last_id_dir: Path) -> int:
         """将旧的 last_id 文本文件迁移到数据库。"""
